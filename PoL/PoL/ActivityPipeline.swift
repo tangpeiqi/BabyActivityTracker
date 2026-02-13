@@ -24,6 +24,19 @@ final class ActivityPipeline {
         try store.saveEvent(from: capture, inference: inference)
     }
 
+    func processVideoSegment(manifestURL: URL, capturedAt: Date, metadata: [String: String]) async throws {
+        let capture = CaptureEnvelope(
+            id: UUID(),
+            captureType: .shortVideo,
+            capturedAt: capturedAt,
+            deviceId: nil,
+            localMediaURL: manifestURL,
+            metadata: metadata
+        )
+        let inference = try await inferenceClient.infer(from: capture)
+        try store.saveEvent(from: capture, inference: inference)
+    }
+
     private func persistCaptureData(_ data: Data, ext: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("PoLCaptures", isDirectory: true)

@@ -29,6 +29,10 @@ final class WearablesManager: ObservableObject {
     @Published private(set) var isBusy: Bool = false
     @Published private(set) var debugEvents: [WearablesDebugEvent] = []
     @Published private(set) var buttonLikeEventDetected: Bool = false
+    @Published private(set) var latestSegmentManifestURL: URL?
+    @Published private(set) var latestSegmentEndedAt: Date?
+    @Published private(set) var latestSegmentFrameCount: Int = 0
+    @Published private(set) var isActivitiesTabActive: Bool = false
 
     private var streamSession: StreamSession?
     private var streamStateToken: Any?
@@ -38,7 +42,10 @@ final class WearablesManager: ObservableObject {
     private var previousStreamStateNormalized: String?
     private var lastAppInitiatedSessionControlAt: Date?
     private var lastVideoFrameLogAt: Date?
+    private var activeSegmentID: UUID?
+    private var activeSegmentStartedAt: Date?
     private let debugEventLimit: Int = 60
+    private let segmentRecorder = LocalVideoSegmentRecorder()
 
     init(autoConfigure: Bool = true) {
         configSummary = readMWDATConfigSummary()
@@ -173,6 +180,9 @@ final class WearablesManager: ObservableObject {
                 }
             }
 
+            if shouldRecreateSessionForStart() {
+                await resetCurrentSessionForRestart()
+            }
             let session = try makeOrReuseSession()
             await session.start()
             lastError = nil
@@ -189,6 +199,7 @@ final class WearablesManager: ObservableObject {
 
         guard let session = streamSession else { return }
         await session.stop()
+        await clearSessionReferences()
     }
 
     func capturePhoto() {
@@ -208,6 +219,23 @@ final class WearablesManager: ObservableObject {
     func clearDebugEvents() {
         debugEvents.removeAll()
         buttonLikeEventDetected = false
+    }
+
+    func setActivitiesTabActive(_ isActive: Bool) {
+        guard isActivitiesTabActive != isActive else { return }
+        isActivitiesTabActive = isActive
+        recordDebugEvent(
+            "activities_tab_state",
+            metadata: ["active": isActive ? "true" : "false"]
+        )
+    }
+
+    var isCameraPermissionGranted: Bool {
+        isPermissionGrantedText(cameraPermissionText)
+    }
+
+    var isDeviceRegistered: Bool {
+        registrationStateText.lowercased() == "registered"
     }
 
     private func observeWearablesState() {
@@ -249,6 +277,35 @@ final class WearablesManager: ObservableObject {
         return session
     }
 
+    private func shouldRecreateSessionForStart() -> Bool {
+        guard streamSession != nil else { return false }
+        let state = streamStateText.lowercased()
+        return state != "streaming" && state != "starting"
+    }
+
+    private func resetCurrentSessionForRestart() async {
+        guard let session = streamSession else { return }
+        await session.stop()
+        await clearSessionReferences()
+        recordDebugEvent("stream_session_recreated")
+    }
+
+    private func clearSessionReferences() async {
+        if activeSegmentID != nil {
+            recordDebugEvent("segment_abandoned_on_session_reset")
+        }
+        activeSegmentID = nil
+        activeSegmentStartedAt = nil
+        await segmentRecorder.discardActiveSegment()
+        streamSession = nil
+        streamStateToken = nil
+        videoFrameToken = nil
+        photoDataToken = nil
+        previousStreamStateNormalized = nil
+        isStreaming = false
+        streamStateText = "stopped"
+    }
+
     private func bindSessionCallbacks(_ session: StreamSession) {
         streamStateToken = session.statePublisher.listen { [weak self] state in
             guard let self else { return }
@@ -267,6 +324,7 @@ final class WearablesManager: ObservableObject {
                     metadata: ["from": previous ?? "<none>", "to": normalized],
                     isButtonLike: isButtonLike
                 )
+                self.handleSegmentTransition(from: previous, to: normalized)
             }
         }
 
@@ -275,6 +333,19 @@ final class WearablesManager: ObservableObject {
             Task { @MainActor in
                 self.latestFrame = image
                 let now = Date()
+                if let segmentID = self.activeSegmentID {
+                    do {
+                        try await self.segmentRecorder.appendFrame(
+                            image: image,
+                            segmentID: segmentID
+                        )
+                    } catch {
+                        self.recordDebugEvent(
+                            "segment_frame_write_error",
+                            metadata: ["error": error.localizedDescription]
+                        )
+                    }
+                }
                 if let lastLogAt = self.lastVideoFrameLogAt, now.timeIntervalSince(lastLogAt) < 1 {
                     return
                 }
@@ -326,6 +397,128 @@ final class WearablesManager: ObservableObject {
         return true
     }
 
+    private func handleSegmentTransition(from previous: String?, to current: String) {
+        if previous == "paused", current == "streaming" {
+            beginSegment()
+            return
+        }
+        if previous == "streaming", current == "paused" {
+            endSegment()
+        }
+    }
+
+    private func beginSegment() {
+        guard activeSegmentID == nil else { return }
+        let segmentID = UUID()
+        let startedAt = Date()
+        activeSegmentID = segmentID
+        activeSegmentStartedAt = startedAt
+        recordDebugEvent(
+            "segment_start_detected",
+            metadata: ["segmentId": segmentID.uuidString]
+        )
+
+        Task {
+            do {
+                guard activeSegmentID == segmentID else { return }
+                try await segmentRecorder.startSegment(id: segmentID, startedAt: startedAt)
+            } catch {
+                if activeSegmentID == segmentID {
+                    activeSegmentID = nil
+                    activeSegmentStartedAt = nil
+                }
+                lastError = formatError("Failed to start segment recording", error)
+                recordDebugEvent(
+                    "segment_start_error",
+                    metadata: ["error": error.localizedDescription]
+                )
+            }
+        }
+    }
+
+    private func endSegment() {
+        guard let segmentID = activeSegmentID else { return }
+        let endedAt = Date()
+        let startedAt = activeSegmentStartedAt
+        activeSegmentID = nil
+        activeSegmentStartedAt = nil
+        recordDebugEvent(
+            "segment_end_detected",
+            metadata: ["segmentId": segmentID.uuidString]
+        )
+
+        Task {
+            do {
+                guard let persisted = try await segmentRecorder.endSegment(id: segmentID, endedAt: endedAt) else {
+                    recordDebugEvent(
+                        "segment_end_missing",
+                        metadata: ["segmentId": segmentID.uuidString]
+                    )
+                    return
+                }
+                latestSegmentManifestURL = persisted.manifestURL
+                latestSegmentEndedAt = persisted.endedAt
+                latestSegmentFrameCount = persisted.frameCount
+                let elapsed = startedAt.map { endedAt.timeIntervalSince($0) } ?? 0
+                recordDebugEvent(
+                    "segment_saved",
+                    metadata: [
+                        "segmentId": persisted.id.uuidString,
+                        "frames": "\(persisted.frameCount)",
+                        "elapsedSec": String(format: "%.2f", elapsed),
+                        "manifest": persisted.manifestURL.lastPathComponent
+                    ]
+                )
+
+                guard let pipeline = activityPipeline else {
+                    lastError = "Activity pipeline is not configured."
+                    recordDebugEvent("segment_pipeline_skipped", metadata: ["reason": "pipeline_missing"])
+                    return
+                }
+                guard isActivitiesTabActive else {
+                    recordDebugEvent("segment_pipeline_skipped", metadata: ["reason": "not_activities_tab"])
+                    return
+                }
+
+                do {
+                    try await pipeline.processVideoSegment(
+                        manifestURL: persisted.manifestURL,
+                        capturedAt: persisted.endedAt,
+                        metadata: [
+                            "source": "mwdat_segment",
+                            "segmentId": persisted.id.uuidString,
+                            "frameCount": "\(persisted.frameCount)",
+                            "durationSec": String(format: "%.2f", elapsed)
+                        ]
+                    )
+                    lastError = nil
+                    recordDebugEvent(
+                        "segment_pipeline_success",
+                        metadata: [
+                            "segmentId": persisted.id.uuidString,
+                            "captureType": "shortVideo"
+                        ]
+                    )
+                } catch {
+                    lastError = formatError("Failed to process ended segment", error)
+                    recordDebugEvent(
+                        "segment_pipeline_error",
+                        metadata: [
+                            "segmentId": persisted.id.uuidString,
+                            "error": error.localizedDescription
+                        ]
+                    )
+                }
+            } catch {
+                lastError = formatError("Failed to finalize segment recording", error)
+                recordDebugEvent(
+                    "segment_end_error",
+                    metadata: ["error": error.localizedDescription]
+                )
+            }
+        }
+    }
+
     private func recordDebugEvent(
         _ name: String,
         metadata: [String: String] = [:],
@@ -349,7 +542,11 @@ final class WearablesManager: ObservableObject {
     }
 
     private func isPermissionGranted(_ status: PermissionStatus) -> Bool {
-        String(describing: status).lowercased() == "granted"
+        isPermissionGrantedText(String(describing: status))
+    }
+
+    private func isPermissionGrantedText(_ text: String) -> Bool {
+        text.lowercased() == "granted"
     }
 
     private func isWearablesActionURL(_ url: URL) -> Bool {

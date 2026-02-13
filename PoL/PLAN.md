@@ -2,7 +2,14 @@
 Baby Activity Tracker (Ray-Ban Meta Gen 2 + iPhone): Finalized Plan v3 (Persist `other`)
 
 ## Summary
-Updated per your requirement: `other` is now persisted in logs (not discarded), shown inline in timeline, and can be edited or deleted later.
+build a baby activity tracker similar to Huckleberry(https://huckleberrycare.com/) that allows parents to easliy take photos, videos or audio on the Ray-Ban Meta Glasses, then pass them to an AI model to understand the data and label them into 5 activities:
+- Changing diaper (wet or bowel movement)
+- Feeding baby
+- Baby asleep
+- Baby wakes up
+- Other
+
+This is a local-first iOS architecture that uses Ray-Ban Meta DAT SDK sessions for capture, sends selected media directly from app to a cloud multimodal model, normalizes results into 5 activity labels, stores logs locally, and renders an editable timeline.
 
 ## Validated Device Interaction Facts (2026-02-12)
 - Before streaming starts, physical button and touch pad interactions are handled by Meta AI app settings, not by this app.
