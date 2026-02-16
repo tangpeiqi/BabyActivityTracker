@@ -60,8 +60,27 @@ final class WearablesManager: ObservableObject {
     func configurePipelineIfNeeded(modelContext: ModelContext) {
         guard activityPipeline == nil else { return }
         let store = SwiftDataActivityStore(modelContext: modelContext)
+        let inferenceClient: InferenceClient
+
+        if let geminiClient = GeminiInferenceAppConfig.makeClient() {
+            inferenceClient = geminiClient
+            recordDebugEvent(
+                "inference_client_configured",
+                metadata: [
+                    "provider": "gemini",
+                    "model": geminiClient.modelName
+                ]
+            )
+        } else {
+            inferenceClient = MockInferenceClient()
+            recordDebugEvent(
+                "inference_client_configured",
+                metadata: ["provider": "mock", "reason": "missing_gemini_config"]
+            )
+        }
+
         activityPipeline = ActivityPipeline(
-            inferenceClient: MockInferenceClient(),
+            inferenceClient: inferenceClient,
             store: store
         )
     }
