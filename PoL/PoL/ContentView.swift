@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct ContentView: View {
     private enum AppTab: Hashable {
@@ -17,6 +18,7 @@ struct ContentView: View {
 
     @EnvironmentObject private var wearablesManager: WearablesManager
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \ActivityEventRecord.timestamp, order: .reverse) private var timelineEvents: [ActivityEventRecord]
     @State private var selectedTab: AppTab = .summary
 
@@ -223,10 +225,21 @@ struct ContentView: View {
         }
         .onChange(of: selectedTab) { _, newValue in
             wearablesManager.setActivitiesTabActive(newValue == .activities)
+            updateIdleTimerPolicy()
+        }
+        .onChange(of: scenePhase) { _, _ in
+            updateIdleTimerPolicy()
+        }
+        .onChange(of: wearablesManager.streamStateText) { _, _ in
+            updateIdleTimerPolicy()
         }
         .task {
             wearablesManager.configurePipelineIfNeeded(modelContext: modelContext)
             wearablesManager.setActivitiesTabActive(selectedTab == .activities)
+            updateIdleTimerPolicy()
+        }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
         }
     }
 
@@ -238,6 +251,13 @@ struct ContentView: View {
             Text(value)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func updateIdleTimerPolicy() {
+        let shouldDisableIdleTimer = scenePhase == .active && wearablesManager.hasActiveStreamSession
+        if UIApplication.shared.isIdleTimerDisabled != shouldDisableIdleTimer {
+            UIApplication.shared.isIdleTimerDisabled = shouldDisableIdleTimer
         }
     }
 
