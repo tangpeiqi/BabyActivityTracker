@@ -32,7 +32,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>GEMINI_API_KEY</key>
-	<string></string>
+	<string>AIzaSyCix2yMZJVSO4ST-jVaDyQcZoXNfpEruqY</string>
 	<key>GEMINI_MODEL</key>
 	<string>gemini-2.0-flash</string>
 	<key>LSApplicationQueriesSchemes</key>

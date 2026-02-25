@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import MWDATCamera
 import MWDATCore
+import Speech
 import SwiftData
 import UIKit
 
@@ -34,6 +35,8 @@ final class WearablesManager: ObservableObject {
     @Published private(set) var latestSegmentEndedAt: Date?
     @Published private(set) var latestSegmentFrameCount: Int = 0
     @Published private(set) var isActivitiesTabActive: Bool = false
+    @Published private(set) var voiceCancelEnabled: Bool = false
+    @Published private(set) var isVoiceCancelListening: Bool = false
 
     private var streamSession: StreamSession?
     private var streamStateToken: Any?
@@ -46,6 +49,10 @@ final class WearablesManager: ObservableObject {
     private var activeSegmentID: UUID?
     private var activeSegmentStartedAt: Date?
     private var cancelledSegmentIDs: Set<UUID> = []
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let voiceCommandAudioEngine = AVAudioEngine()
+    private var speechRecognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var speechRecognitionTask: SFSpeechRecognitionTask?
     private let debugEventLimit: Int = 60
     private let segmentRecorder = LocalVideoSegmentRecorder()
     private let audioRecorder = AudioSegmentRecorder()
@@ -264,6 +271,17 @@ final class WearablesManager: ObservableObject {
             "activities_tab_state",
             metadata: ["active": isActive ? "true" : "false"]
         )
+        reevaluateVoiceCancelListening()
+    }
+
+    func setVoiceCancelEnabled(_ enabled: Bool) {
+        guard voiceCancelEnabled != enabled else { return }
+        voiceCancelEnabled = enabled
+        recordDebugEvent(
+            "voice_cancel_toggle",
+            metadata: ["enabled": enabled ? "true" : "false"]
+        )
+        reevaluateVoiceCancelListening()
     }
 
     func cancelCurrentSession() async {
@@ -390,6 +408,7 @@ final class WearablesManager: ObservableObject {
         previousStreamStateNormalized = nil
         isStreaming = false
         streamStateText = "stopped"
+        stopVoiceCancelListening()
     }
 
     private func bindSessionCallbacks(_ session: StreamSession) {
@@ -411,6 +430,7 @@ final class WearablesManager: ObservableObject {
                     isButtonLike: isButtonLike
                 )
                 self.handleSegmentTransition(from: previous, to: normalized)
+                self.reevaluateVoiceCancelListening()
             }
         }
 
@@ -626,6 +646,14 @@ final class WearablesManager: ObservableObject {
     }
 
     private func startOptionalAudioCapture(for segmentID: UUID) async {
+        guard !voiceCancelEnabled else {
+            recordDebugEvent(
+                "audio_start_skipped",
+                metadata: ["segmentId": segmentID.uuidString, "reason": "voice_cancel_enabled"]
+            )
+            return
+        }
+
         guard isActivitiesTabActive else {
             recordDebugEvent(
                 "audio_start_skipped",
@@ -815,6 +843,133 @@ final class WearablesManager: ObservableObject {
                     "error": error.localizedDescription
                 ]
             )
+        }
+    }
+
+    private func reevaluateVoiceCancelListening() {
+        let shouldListen = voiceCancelEnabled && isActivitiesTabActive && hasActiveStreamSession
+        if shouldListen {
+            Task {
+                await startVoiceCancelListeningIfNeeded()
+            }
+        } else {
+            stopVoiceCancelListening()
+        }
+    }
+
+    private func startVoiceCancelListeningIfNeeded() async {
+        guard !isVoiceCancelListening else { return }
+        guard let speechRecognizer else {
+            lastError = "Voice cancel unavailable: speech recognizer is not available."
+            return
+        }
+        guard speechRecognizer.isAvailable else {
+            lastError = "Voice cancel unavailable: recognizer is currently unavailable."
+            return
+        }
+        guard await requestSpeechRecognitionPermissionIfNeeded() else {
+            lastError = "Voice cancel unavailable: speech recognition permission denied."
+            return
+        }
+
+        stopVoiceCancelListening()
+
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(
+                .record,
+                mode: .measurement,
+                options: [.duckOthers, .allowBluetoothHFP]
+            )
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+
+            let request = SFSpeechAudioBufferRecognitionRequest()
+            request.shouldReportPartialResults = true
+            speechRecognitionRequest = request
+
+            let inputNode = voiceCommandAudioEngine.inputNode
+            let format = inputNode.outputFormat(forBus: 0)
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                self?.speechRecognitionRequest?.append(buffer)
+            }
+
+            voiceCommandAudioEngine.prepare()
+            try voiceCommandAudioEngine.start()
+
+            speechRecognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
+                guard let self else { return }
+                Task { @MainActor in
+                    if let result {
+                        self.handleVoiceRecognitionTranscript(result.bestTranscription.formattedString)
+                    }
+                    if result?.isFinal == true || error != nil {
+                        self.stopVoiceCancelListening()
+                        self.reevaluateVoiceCancelListening()
+                    }
+                }
+            }
+
+            isVoiceCancelListening = true
+            recordDebugEvent("voice_cancel_listening_started")
+        } catch {
+            stopVoiceCancelListening()
+            lastError = formatError("Failed to start voice cancel listening", error)
+            recordDebugEvent(
+                "voice_cancel_listening_error",
+                metadata: ["error": error.localizedDescription]
+            )
+        }
+    }
+
+    private func stopVoiceCancelListening() {
+        speechRecognitionTask?.cancel()
+        speechRecognitionTask = nil
+
+        speechRecognitionRequest?.endAudio()
+        speechRecognitionRequest = nil
+
+        voiceCommandAudioEngine.stop()
+        voiceCommandAudioEngine.inputNode.removeTap(onBus: 0)
+
+        if isVoiceCancelListening {
+            isVoiceCancelListening = false
+            recordDebugEvent("voice_cancel_listening_stopped")
+        }
+    }
+
+    private func handleVoiceRecognitionTranscript(_ transcript: String) {
+        let normalized = transcript.lowercased()
+        guard containsCancelSessionPhrase(normalized) else { return }
+
+        recordDebugEvent("voice_cancel_phrase_detected", metadata: ["transcript": normalized])
+        Task {
+            await cancelCurrentSession()
+        }
+    }
+
+    private func containsCancelSessionPhrase(_ text: String) -> Bool {
+        if text.contains("cancel session") {
+            return true
+        }
+        return text.contains("cancel") && (text.contains("segment") || text.contains("capture"))
+    }
+
+    private func requestSpeechRecognitionPermissionIfNeeded() async -> Bool {
+        let currentStatus = SFSpeechRecognizer.authorizationStatus()
+        switch currentStatus {
+        case .authorized:
+            return true
+        case .denied, .restricted:
+            return false
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    continuation.resume(returning: status == .authorized)
+                }
+            }
+        @unknown default:
+            return false
         }
     }
 

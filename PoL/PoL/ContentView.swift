@@ -125,103 +125,90 @@ struct ContentView: View {
                     }
 
                     if !wearablesManager.isDeviceRegistered {
-                        Section("Registration") {
-                            Button("Register") {
-                                Task {
-                                    await wearablesManager.startRegistration()
-                                }
-                            }
-                            .disabled(wearablesManager.isBusy)
+                        Section {
+                            registrationButton(isRegistered: false)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .listRowBackground(Color.clear)
                         }
                     }
 
                     if !wearablesManager.isCameraPermissionGranted {
-                        Section("Camera Permission") {
-                            Button("Check Camera Permission") {
-                                Task {
-                                    await wearablesManager.refreshCameraPermission()
-                                }
-                            }
-                            .disabled(wearablesManager.isBusy)
-
-                            Button("Request Camera Permission") {
+                        Section {
+                            actionCardButton(
+                                title: "Request Camera Permission",
+                                color: Color(red: 0, green: 0.73, blue: 1),
+                                shadowColor: Color(red: 0.19, green: 0.51, blue: 0.63).opacity(0.5)
+                            ) {
                                 Task {
                                     await wearablesManager.requestCameraPermission()
                                 }
                             }
                             .disabled(wearablesManager.isBusy)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
                         }
                     }
 
-                    Section("Camera Stream") {
-                        Button("Start Stream") {
-                            Task {
-                                await wearablesManager.startCameraStream()
-                            }
-                        }
-                        .disabled(wearablesManager.isBusy || wearablesManager.hasActiveStreamSession)
-
-                        if wearablesManager.hasActiveStreamSession {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: "hand.tap.fill")
-                                    .foregroundStyle(.orange)
-                                Text("To get ready for the experience, tap once on the glasses touch pad to pause the streaming, then switch to the Activities tab.")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                            }
-                            .padding(10)
-                            .background(.orange.opacity(0.18))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
-
-                        Button("Stop Stream") {
-                            Task {
-                                await wearablesManager.stopCameraStream()
-                            }
-                        }
-                        .disabled(wearablesManager.isBusy || !wearablesManager.hasActiveStreamSession)
-
-                        Button("Capture Photo") {
-                            wearablesManager.capturePhoto()
-                        }
-                        .disabled(wearablesManager.isBusy || !wearablesManager.isStreaming)
+                    Section {
+                        cameraStreamCard
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.clear)
                     }
 
-                    Section("Wearables Status") {
-                        statusRow("Registration", wearablesManager.registrationStateText)
-                        statusRow("Camera Permission", wearablesManager.cameraPermissionText)
-                        statusRow("Connected Devices", "\(wearablesManager.connectedDeviceCount)")
-                        statusRow("Stream State", wearablesManager.streamStateText)
-                        statusRow("MWDAT Config", wearablesManager.configSummary)
+                    Section {
+                        widgetCard {
+                            VStack(spacing: 12) {
+                                statusRow("Registration", wearablesManager.registrationStateText)
+                                statusRow("Camera Permission", wearablesManager.cameraPermissionText)
+                                statusRow("Connected Devices", "\(wearablesManager.connectedDeviceCount)")
+                                statusRow("Stream State", wearablesManager.streamStateText)
+                                statusRow("MWDAT Config", wearablesManager.configSummary)
 
-                        if let callbackDate = wearablesManager.lastCallbackHandledAt {
-                            statusRow("Last Callback", callbackDate.formatted(date: .abbreviated, time: .standard))
+                                if let callbackDate = wearablesManager.lastCallbackHandledAt {
+                                    statusRow("Last Callback", callbackDate.formatted(date: .abbreviated, time: .standard))
+                                }
+                                if let captureDate = wearablesManager.latestPhotoCaptureAt {
+                                    statusRow("Last Photo", captureDate.formatted(date: .abbreviated, time: .standard))
+                                }
+                            }
+                            .padding(16)
                         }
-                        if let captureDate = wearablesManager.latestPhotoCaptureAt {
-                            statusRow("Last Photo", captureDate.formatted(date: .abbreviated, time: .standard))
-                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                    } header: {
+                        Text("Wearables Status")
                     }
 
-                    Section("Diagnostics") {
-                        NavigationLink("Debug Logs") {
-                            DebugLogsView()
+                    Section {
+                        widgetCard {
+                            VStack(spacing: 0) {
+                                NavigationLink("Debug Logs") {
+                                    DebugLogsView()
+                                }
+                                Divider()
+                                NavigationLink("Live Preview") {
+                                    LivePreviewView()
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 4)
                         }
-                        NavigationLink("Live Preview") {
-                            LivePreviewView()
-                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                    } header: {
+                        Text("Diagnostics")
                     }
 
                     if wearablesManager.isDeviceRegistered {
-                        Section("Registration") {
-                            Button("Unregister", role: .destructive) {
-                                Task {
-                                    await wearablesManager.startUnregistration()
-                                }
-                            }
-                            .disabled(wearablesManager.isBusy)
+                        Section {
+                            registrationButton(isRegistered: true)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .listRowBackground(Color.clear)
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(settingsBackground)
                 .navigationTitle("Settings")
             }
             .tabItem {
@@ -258,6 +245,252 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
         }
+    }
+
+    private enum CameraStreamLayoutState {
+        case stopped
+        case streaming
+        case paused
+    }
+
+    private var settingsBackground: some View {
+        Group {
+            if let imagePath = Bundle.main.path(forResource: "SettingsBackground", ofType: "jpg"),
+               let image = UIImage(contentsOfFile: imagePath) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image("SettingsBackground")
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    private var streamLayoutState: CameraStreamLayoutState {
+        let normalized = wearablesManager.streamStateText
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "")
+        if normalized.contains("paused") {
+            return .paused
+        }
+        if normalized.contains("streaming")
+            || normalized.contains("starting")
+            || normalized.contains("waitingfordevice")
+            || normalized.contains("connecting") {
+            return .streaming
+        }
+        return .stopped
+    }
+
+    @ViewBuilder
+    private func registrationButton(isRegistered: Bool) -> some View {
+        let borderColor: Color = isRegistered ? .red : Color(red: 0, green: 0.73, blue: 1)
+        let shadowColor = (isRegistered ? Color.red : Color(red: 0.19, green: 0.51, blue: 0.63)).opacity(0.5)
+        actionCardButton(
+            title: isRegistered ? "Unregister" : "Register your glasses",
+            color: borderColor,
+            shadowColor: shadowColor
+        ) {
+            Task {
+                if isRegistered {
+                    await wearablesManager.startUnregistration()
+                } else {
+                    await wearablesManager.startRegistration()
+                }
+            }
+        }
+        .disabled(wearablesManager.isBusy)
+    }
+
+    @ViewBuilder
+    private func actionCardButton(
+        title: String,
+        color: Color,
+        shadowColor: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(shadowColor)
+                    .offset(y: 4)
+
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24)
+                            .stroke(color, lineWidth: 1)
+                    )
+
+                Text(title)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(color)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 64)
+        }
+    }
+
+    @ViewBuilder
+    private func widgetCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color(red: 0.19, green: 0.51, blue: 0.63).opacity(0.5))
+                .offset(y: 4)
+
+            RoundedRectangle(cornerRadius: 24)
+                .fill(.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24)
+                        .stroke(Color(red: 0.93, green: 0.93, blue: 0.93), lineWidth: 1)
+                )
+
+            content()
+        }
+    }
+
+    private var cameraStreamCard: some View {
+        let statusText: String = {
+            switch streamLayoutState {
+            case .stopped:
+                return "Stopped"
+            case .streaming:
+                return "Streaming"
+            case .paused:
+                return "Paused"
+            }
+        }()
+
+        let banner: (text: String, color: Color)? = {
+            switch streamLayoutState {
+            case .stopped:
+                return nil
+            case .streaming:
+                return (
+                    "To get ready for the experience, tap once on the glasses touch pad to pause the streaming, then switch to the Activities tab.",
+                    Color(red: 1.0, green: 0.60, blue: 0.24)
+                )
+            case .paused:
+                return (
+                    "Great! Head over to the Activities tab and try out the experience!",
+                    Color(red: 0.09, green: 0.67, blue: 0.34)
+                )
+            }
+        }()
+
+        return VStack(spacing: 0) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(Color(red: 0.19, green: 0.51, blue: 0.63).opacity(0.5))
+                    .offset(y: 4)
+
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24)
+                            .stroke(Color(red: 0.93, green: 0.93, blue: 0.93), lineWidth: 1)
+                    )
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Camera Stream")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.black)
+                        Text(statusText)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.gray)
+                    }
+                    Spacer(minLength: 12)
+                    controlButton(for: streamLayoutState)
+                    stopButton(for: streamLayoutState)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+            }
+            .frame(height: 96)
+
+            if let banner {
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(Color(red: 0.19, green: 0.51, blue: 0.63).opacity(0.5))
+                        .offset(y: 4)
+
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(banner.color)
+
+                    Text(banner.text)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func controlButton(for state: CameraStreamLayoutState) -> some View {
+        switch state {
+        case .stopped:
+            Button {
+                Task {
+                    await wearablesManager.startCameraStream()
+                }
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 64, height: 64)
+                    .background(Circle().fill(Color(red: 0.10, green: 0.67, blue: 0.90)))
+            }
+            .disabled(wearablesManager.isBusy || wearablesManager.hasActiveStreamSession)
+        case .streaming:
+            ZStack {
+                Circle()
+                    .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                    .frame(width: 64, height: 64)
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(red: 0.96, green: 0.96, blue: 0.96))
+                        .frame(width: 8, height: 30)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(red: 0.96, green: 0.96, blue: 0.96))
+                        .frame(width: 8, height: 30)
+                }
+            }
+        case .paused:
+            ZStack {
+                Circle()
+                    .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                    .frame(width: 64, height: 64)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.96, green: 0.96, blue: 0.96))
+            }
+        }
+    }
+
+    private func stopButton(for state: CameraStreamLayoutState) -> some View {
+        let enabled = state != .stopped
+        return Button {
+            Task {
+                await wearablesManager.stopCameraStream()
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(enabled ? Color.red : Color(red: 0.85, green: 0.85, blue: 0.85))
+                    .frame(width: 64, height: 64)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color(red: 0.96, green: 0.96, blue: 0.96))
+                    .frame(width: 24, height: 24)
+            }
+        }
+        .disabled(wearablesManager.isBusy || !enabled)
     }
 
     private func updateIdleTimerPolicy() {
