@@ -127,7 +127,6 @@ struct ContentView: View {
                     if !wearablesManager.isDeviceRegistered {
                         Section {
                             registrationButton(isRegistered: false)
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                                 .listRowBackground(Color.clear)
                         }
                     }
@@ -144,25 +143,20 @@ struct ContentView: View {
                                 }
                             }
                             .disabled(wearablesManager.isBusy)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             .listRowBackground(Color.clear)
                         }
                     }
 
                     Section {
                         cameraStreamCard
-                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             .listRowBackground(Color.clear)
                     }
 
                     Section {
                         widgetCard {
                             VStack(spacing: 12) {
-                                statusRow("Registration", wearablesManager.registrationStateText)
+                                statusRow("Registration", simplifiedRegistrationStatus)
                                 statusRow("Camera Permission", wearablesManager.cameraPermissionText)
-                                statusRow("Connected Devices", "\(wearablesManager.connectedDeviceCount)")
-                                statusRow("Stream State", wearablesManager.streamStateText)
-                                statusRow("MWDAT Config", wearablesManager.configSummary)
 
                                 if let callbackDate = wearablesManager.lastCallbackHandledAt {
                                     statusRow("Last Callback", callbackDate.formatted(date: .abbreviated, time: .standard))
@@ -173,10 +167,9 @@ struct ContentView: View {
                             }
                             .padding(16)
                         }
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         .listRowBackground(Color.clear)
                     } header: {
-                        Text("Wearables Status")
+                        sectionHeader("Wearables Status")
                     }
 
                     Section {
@@ -185,28 +178,32 @@ struct ContentView: View {
                                 NavigationLink("Debug Logs") {
                                     DebugLogsView()
                                 }
+                                .padding(.vertical, 12)
                                 Divider()
                                 NavigationLink("Live Preview") {
                                     LivePreviewView()
                                 }
+                                .padding(.vertical, 12)
                             }
                             .padding(.horizontal, 16)
-                            .padding(.vertical, 4)
+                            .padding(.vertical, 8)
                         }
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         .listRowBackground(Color.clear)
                     } header: {
-                        Text("Diagnostics")
+                        sectionHeader("Diagnostics")
                     }
 
                     if wearablesManager.isDeviceRegistered {
                         Section {
                             registrationButton(isRegistered: true)
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                                 .listRowBackground(Color.clear)
                         }
                     }
                 }
+                .safeAreaInset(edge: .top) {
+                    Color.clear.frame(height: 8)
+                }
+                .listSectionSpacing(.compact)
                 .scrollContentBackground(.hidden)
                 .background(settingsBackground)
                 .navigationTitle("Settings")
@@ -245,6 +242,42 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
         }
+    }
+
+    @ViewBuilder
+    private func statusTwoLineRow(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+            Text(value)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var simplifiedRegistrationStatus: String {
+        let normalized = wearablesManager.registrationStateText
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "")
+        if normalized.contains("unregistering") {
+            return "unregistering"
+        }
+        if normalized.contains("registering") {
+            return "registering"
+        }
+        if normalized.contains("unregistered") || normalized.contains("notregistered") {
+            return "unregistered"
+        }
+        if normalized.contains("registered") {
+            return "registered"
+        }
+        return normalized.isEmpty ? "unknown" : normalized
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .textCase(nil)
+            .padding(.bottom, -6)
     }
 
     private enum CameraStreamLayoutState {
