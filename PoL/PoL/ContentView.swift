@@ -102,7 +102,7 @@ struct ContentView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
-                                .padding(.vertical, 2)
+                                .padding(.vertical, 2 )
                             }
                         }
                     }
@@ -126,76 +126,72 @@ struct ContentView: View {
 
                     if !wearablesManager.isDeviceRegistered {
                         Section {
-                            registrationButton(isRegistered: false)
+                            widgetRow {
+                                registrationButton(isRegistered: false)
+                            }
+                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                                 .listRowBackground(Color.clear)
                         }
                     }
 
-                    if !wearablesManager.isCameraPermissionGranted {
+                    if wearablesManager.isDeviceRegistered && !wearablesManager.isCameraPermissionGranted {
                         Section {
-                            actionCardButton(
-                                title: "Request Camera Permission",
-                                color: Color(red: 0, green: 0.73, blue: 1),
-                                shadowColor: Color(red: 0.19, green: 0.51, blue: 0.63).opacity(0.5)
-                            ) {
-                                Task {
-                                    await wearablesManager.requestCameraPermission()
+                            widgetRow {
+                                actionCardButton(
+                                    title: "Request Camera Permission",
+                                    color: Color(red: 0, green: 0.73, blue: 1),
+                                    shadowColor: Color(red: 0.19, green: 0.51, blue: 0.63).opacity(0.5)
+                                ) {
+                                    Task {
+                                        await wearablesManager.requestCameraPermission()
+                                    }
                                 }
                             }
                             .disabled(wearablesManager.isBusy)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                             .listRowBackground(Color.clear)
                         }
                     }
 
-                    Section {
-                        cameraStreamCard
-                            .listRowBackground(Color.clear)
+                    if wearablesManager.isDeviceRegistered && wearablesManager.isCameraPermissionGranted {
+                        widgetRow {
+                            cameraStreamCard
+                        }
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .listRowBackground(Color.clear)
                     }
 
-                    Section {
-                        widgetCard {
-                            VStack(spacing: 12) {
-                                statusRow("Registration", simplifiedRegistrationStatus)
-                                statusRow("Camera Permission", wearablesManager.cameraPermissionText)
-
-                                if let callbackDate = wearablesManager.lastCallbackHandledAt {
-                                    statusRow("Last Callback", callbackDate.formatted(date: .abbreviated, time: .standard))
+                    Section("Diagnostics") {
+                        widgetRow {
+                            widgetCard {
+                                VStack(spacing: 0) {
+                                    statusRow("Camera Permission", wearablesManager.cameraPermissionText)
+                                        .padding(.vertical, 12)
+                                    Divider()
+                                    NavigationLink("Debug Logs") {
+                                        DebugLogsView()
+                                    }
+                                    .padding(.vertical, 12)
+                                    Divider()
+                                    NavigationLink("Live Preview") {
+                                        LivePreviewView()
+                                    }
+                                    .padding(.vertical, 12)
                                 }
-                                if let captureDate = wearablesManager.latestPhotoCaptureAt {
-                                    statusRow("Last Photo", captureDate.formatted(date: .abbreviated, time: .standard))
-                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
                             }
-                            .padding(16)
                         }
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                         .listRowBackground(Color.clear)
-                    } header: {
-                        sectionHeader("Wearables Status")
-                    }
-
-                    Section {
-                        widgetCard {
-                            VStack(spacing: 0) {
-                                NavigationLink("Debug Logs") {
-                                    DebugLogsView()
-                                }
-                                .padding(.vertical, 12)
-                                Divider()
-                                NavigationLink("Live Preview") {
-                                    LivePreviewView()
-                                }
-                                .padding(.vertical, 12)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                        }
-                        .listRowBackground(Color.clear)
-                    } header: {
-                        sectionHeader("Diagnostics")
                     }
 
                     if wearablesManager.isDeviceRegistered {
                         Section {
-                            registrationButton(isRegistered: true)
+                            widgetRow {
+                                registrationButton(isRegistered: true)
+                            }
+                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                                 .listRowBackground(Color.clear)
                         }
                     }
@@ -254,30 +250,11 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var simplifiedRegistrationStatus: String {
-        let normalized = wearablesManager.registrationStateText
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "")
-        if normalized.contains("unregistering") {
-            return "unregistering"
-        }
-        if normalized.contains("registering") {
-            return "registering"
-        }
-        if normalized.contains("unregistered") || normalized.contains("notregistered") {
-            return "unregistered"
-        }
-        if normalized.contains("registered") {
-            return "registered"
-        }
-        return normalized.isEmpty ? "unknown" : normalized
-    }
-
     @ViewBuilder
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .textCase(nil)
-            .padding(.bottom, -6)
+    private func widgetRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
     }
 
     private enum CameraStreamLayoutState {
@@ -323,7 +300,7 @@ struct ContentView: View {
         let borderColor: Color = isRegistered ? .red : Color(red: 0, green: 0.73, blue: 1)
         let shadowColor = (isRegistered ? Color.red : Color(red: 0.19, green: 0.51, blue: 0.63)).opacity(0.5)
         actionCardButton(
-            title: isRegistered ? "Unregister" : "Register your glasses",
+            title: isRegistered ? "Unregister Your Glasses" : "Register your glasses",
             color: borderColor,
             shadowColor: shadowColor
         ) {
@@ -383,6 +360,7 @@ struct ContentView: View {
 
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var cameraStreamCard: some View {
@@ -463,6 +441,7 @@ struct ContentView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
