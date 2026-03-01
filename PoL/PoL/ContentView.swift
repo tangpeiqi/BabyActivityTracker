@@ -21,6 +21,9 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \ActivityEventRecord.timestamp, order: .reverse) private var timelineEvents: [ActivityEventRecord]
     @State private var selectedTab: AppTab = .summary
+    @State private var eventPendingEdit: ActivityEventRecord?
+    @State private var eventPendingDelete: ActivityEventRecord?
+    @State private var timelineActionError: String?
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -69,44 +72,71 @@ struct ContentView: View {
                         }
                     }
 
-                    Section("Activity Timeline") {
-                        let visibleEvents = timelineEvents.filter { !$0.isDeleted }
-                        if visibleEvents.isEmpty {
+                    let visibleEvents = timelineEvents.filter { !$0.isDeleted }
+                    if visibleEvents.isEmpty {
+                        Section("Activity Timeline") {
                             Text("No activity events yet. End a segment to create one.")
                                 .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(visibleEvents) { event in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text(event.label.displayName)
-                                            .font(.headline)
-                                        if event.needsReview {
-                                            Text("Needs Review")
-                                                .font(.caption)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(.yellow.opacity(0.2))
-                                                .clipShape(Capsule())
-                                        }
-                                    }
-                                    Text(event.timestamp.formatted(date: .abbreviated, time: .standard))
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                    Text("Confidence: \(event.confidence.formatted(.number.precision(.fractionLength(2))))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Text("Frames: \(event.frameCount.map(String.init) ?? "-")")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Text(event.rationaleShort)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        let calendar = Calendar.current
+                        let groupedEvents = Dictionary(grouping: visibleEvents) {
+                            calendar.startOfDay(for: $0.timestamp)
+                        }
+                        let sortedDays = groupedEvents.keys.sorted(by: >)
+
+                        ForEach(sortedDays, id: \.self) { day in
+                            Section(day.formatted(date: .abbreviated, time: .omitted)) {
+                                let eventsForDay = (groupedEvents[day] ?? []).sorted {
+                                    $0.timestamp > $1.timestamp
                                 }
-                                .padding(.vertical, 2 )
+                                ForEach(eventsForDay) { event in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(event.timestamp.formatted(date: .omitted, time: .shortened))
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                        HStack {
+                                            Text(event.label.displayName)
+                                                .font(.headline)
+                                            if event.needsReview {
+                                                Text("Needs Review")
+                                                    .font(.caption)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(.yellow.opacity(0.2))
+                                                    .clipShape(Capsule())
+                                            }
+                                        }
+                                        Text(event.rationaleShort)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("Confidence: \(event.confidence.formatted(.number.precision(.fractionLength(2))))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(.vertical, 2)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button {
+                                            eventPendingDelete = event
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                        .tint(.red)
+
+                                        Button {
+                                            eventPendingEdit = event
+                                        } label: {
+                                            Label("Edit", systemImage: "pencil")
+                                        }
+                                        .tint(.blue)
+                                    }
+                                }
                             }
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(activitiesBackground)
                 .navigationTitle("Activities")
             }
             .tabItem {
@@ -227,6 +257,66 @@ struct ContentView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
         }
+        .confirmationDialog(
+            "Edit Activity Type",
+            isPresented: Binding(
+                get: { eventPendingEdit != nil },
+                set: { isPresented in
+                    if !isPresented { eventPendingEdit = nil }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            ForEach(editableActivityLabels, id: \.self) { label in
+                Button(label.displayName) {
+                    if let event = eventPendingEdit {
+                        updateActivityType(for: event, to: label)
+                    }
+                    eventPendingEdit = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                eventPendingEdit = nil
+            }
+        } message: {
+            if let event = eventPendingEdit {
+                Text("Change \"\(event.label.displayName)\" to:")
+            }
+        }
+        .alert(
+            "Delete Activity?",
+            isPresented: Binding(
+                get: { eventPendingDelete != nil },
+                set: { isPresented in
+                    if !isPresented { eventPendingDelete = nil }
+                }
+            ),
+            presenting: eventPendingDelete
+        ) { event in
+            Button("Delete", role: .destructive) {
+                deleteActivity(event)
+            }
+            Button("Cancel", role: .cancel) {
+                eventPendingDelete = nil
+            }
+        } message: { _ in
+            Text("This activity will be removed from the timeline.")
+        }
+        .alert(
+            "Timeline Update Failed",
+            isPresented: Binding(
+                get: { timelineActionError != nil },
+                set: { isPresented in
+                    if !isPresented { timelineActionError = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                timelineActionError = nil
+            }
+        } message: {
+            Text(timelineActionError ?? "Please try again.")
+        }
     }
 
     @ViewBuilder
@@ -263,6 +353,31 @@ struct ContentView: View {
         case paused
     }
 
+    private var editableActivityLabels: [ActivityLabel] {
+        [.diaperWet, .diaperBowel, .feeding, .sleepStart, .wakeUp]
+    }
+
+    private func updateActivityType(for event: ActivityEventRecord, to newLabel: ActivityLabel) {
+        event.label = newLabel
+        event.isUserCorrected = true
+        event.needsReview = false
+        persistTimelineChanges()
+    }
+
+    private func deleteActivity(_ event: ActivityEventRecord) {
+        event.isDeleted = true
+        persistTimelineChanges()
+        eventPendingDelete = nil
+    }
+
+    private func persistTimelineChanges() {
+        do {
+            try modelContext.save()
+        } catch {
+            timelineActionError = error.localizedDescription
+        }
+    }
+
     private var settingsBackground: some View {
         Group {
             if let imagePath = Bundle.main.path(forResource: "SettingsBackground", ofType: "jpg"),
@@ -272,6 +387,22 @@ struct ContentView: View {
                     .scaledToFill()
             } else {
                 Image("SettingsBackground")
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    private var activitiesBackground: some View {
+        Group {
+            if let imagePath = Bundle.main.path(forResource: "Activities background", ofType: "jpg"),
+               let image = UIImage(contentsOfFile: imagePath) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image("Activities background")
                     .resizable()
                     .scaledToFill()
             }
