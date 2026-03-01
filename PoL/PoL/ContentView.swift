@@ -257,31 +257,48 @@ struct ContentView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
         }
-        .confirmationDialog(
-            "Edit Activity Type",
+        .sheet(
             isPresented: Binding(
                 get: { eventPendingEdit != nil },
                 set: { isPresented in
                     if !isPresented { eventPendingEdit = nil }
                 }
-            ),
-            titleVisibility: .visible
+            )
         ) {
-            ForEach(editableActivityLabels, id: \.self) { label in
-                Button(label.displayName) {
+            NavigationStack {
+                List {
                     if let event = eventPendingEdit {
-                        updateActivityType(for: event, to: label)
+                        Section("Current") {
+                            Text(event.label.displayName)
+                                .font(.headline)
+                        }
                     }
-                    eventPendingEdit = nil
+
+                    Section("Change To") {
+                        ForEach(editableActivityLabels, id: \.self) { label in
+                            Button {
+                                if let event = eventPendingEdit {
+                                    updateActivityType(for: event, to: label)
+                                }
+                                eventPendingEdit = nil
+                            } label: {
+                                Text(label.displayName)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Edit Activity Type")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            eventPendingEdit = nil
+                        }
+                    }
                 }
             }
-            Button("Cancel", role: .cancel) {
-                eventPendingEdit = nil
-            }
-        } message: {
-            if let event = eventPendingEdit {
-                Text("Change \"\(event.label.displayName)\" to:")
-            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .alert(
             "Delete Activity?",
