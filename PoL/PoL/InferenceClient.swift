@@ -26,7 +26,8 @@ struct MockInferenceClient: InferenceClient {
             label: label,
             confidence: confidence,
             rationaleShort: rationale,
-            modelVersion: "mock-v1"
+            modelVersion: "mock-v1",
+            feedingAmountOz: nil
         )
     }
 }

@@ -193,6 +193,7 @@ final class GeminiInferenceClient: InferenceClient {
         """
         You classify baby-care media into one activity label.
         Allowed labels: diaperWet, diaperBowel, feeding, sleepStart, wakeUp, other.
+        If label is feeding and amount in ounces is inferable, provide feedingAmountOz as a number with one decimal.
         Use only evidence in the media.
         Return JSON only following the schema.
         Capture metadata: type=\(capture.captureType.rawValue), capturedAt=\(capture.capturedAt.ISO8601Format()).
@@ -378,6 +379,13 @@ private struct GeminiResponseSchema: Encodable {
                 minimum: nil,
                 maximum: nil,
                 maxLength: 80
+            ),
+            "feedingAmountOz": .init(
+                type: "NUMBER",
+                enumValues: nil,
+                minimum: 0,
+                maximum: 24,
+                maxLength: nil
             )
         ],
         required: ["label", "confidence", "rationaleShort"]
@@ -405,6 +413,7 @@ private struct GeminiModelOutput: Decodable {
     let confidence: Double
     let rationaleShort: String
     let modelVersion: String?
+    let feedingAmountOz: Double?
 
     func toInferenceResult(fallbackModelVersion: String) -> InferenceResult {
         let mappedLabel = ActivityLabel(rawValue: label) ?? normalizeLabel(label)
@@ -417,8 +426,15 @@ private struct GeminiModelOutput: Decodable {
                     return modelVersion
                 }
                 return fallbackModelVersion
-            }()
+            }(),
+            feedingAmountOz: normalizedFeedingAmountOz(for: mappedLabel)
         )
+    }
+
+    private func normalizedFeedingAmountOz(for label: ActivityLabel) -> Double? {
+        guard label == .feeding, let feedingAmountOz else { return nil }
+        let clamped = min(max(feedingAmountOz, 0), 24)
+        return (clamped * 10).rounded() / 10
     }
 
     private func normalizeLabel(_ rawValue: String) -> ActivityLabel {

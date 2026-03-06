@@ -25,7 +25,18 @@ final class SwiftDataActivityStore: ActivityStore {
             needsReview: inference.confidence < confidenceThreshold,
             rationaleShort: inference.rationaleShort,
             modelVersion: inference.modelVersion,
-            frameCount: frameCount
+            frameCount: frameCount,
+            inferredFeedingAmountOz: inference.feedingAmountOz,
+            diaperChangeValue: {
+                switch inference.label {
+                case .diaperWet:
+                    return .wet
+                case .diaperBowel:
+                    return .bm
+                default:
+                    return nil
+                }
+            }()
         )
         modelContext.insert(event)
         try modelContext.save()

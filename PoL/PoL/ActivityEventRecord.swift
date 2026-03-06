@@ -14,6 +14,9 @@ final class ActivityEventRecord {
     var rationaleShort: String
     var modelVersion: String
     var frameCount: Int?
+    var feedingAmountOz: Double?
+    var inferredFeedingAmountOz: Double?
+    var diaperChangeValueRawValue: String?
 
     init(
         id: UUID = UUID(),
@@ -26,7 +29,10 @@ final class ActivityEventRecord {
         isDeleted: Bool = false,
         rationaleShort: String,
         modelVersion: String,
-        frameCount: Int? = nil
+        frameCount: Int? = nil,
+        feedingAmountOz: Double? = nil,
+        inferredFeedingAmountOz: Double? = nil,
+        diaperChangeValue: DiaperChangeValue? = nil
     ) {
         self.id = id
         self.labelRawValue = label.rawValue
@@ -39,10 +45,18 @@ final class ActivityEventRecord {
         self.rationaleShort = rationaleShort
         self.modelVersion = modelVersion
         self.frameCount = frameCount
+        self.feedingAmountOz = feedingAmountOz
+        self.inferredFeedingAmountOz = inferredFeedingAmountOz
+        self.diaperChangeValueRawValue = diaperChangeValue?.rawValue
     }
 
     var label: ActivityLabel {
         get { ActivityLabel(rawValue: labelRawValue) ?? .other }
         set { labelRawValue = newValue.rawValue }
+    }
+
+    var diaperChangeValue: DiaperChangeValue? {
+        get { diaperChangeValueRawValue.flatMap(DiaperChangeValue.init(rawValue:)) }
+        set { diaperChangeValueRawValue = newValue?.rawValue }
     }
 }

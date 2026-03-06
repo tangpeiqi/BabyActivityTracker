@@ -22,6 +22,22 @@ enum ActivityLabel: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum DiaperChangeValue: String, CaseIterable, Codable, Identifiable {
+    case wet
+    case bm
+    case dry
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .wet: return "Wet"
+        case .bm: return "BM"
+        case .dry: return "Dry"
+        }
+    }
+}
+
 enum CaptureType: String, Codable {
     case photo
     case shortVideo
@@ -42,4 +58,5 @@ struct InferenceResult: Sendable {
     let confidence: Double
     let rationaleShort: String
     let modelVersion: String
+    let feedingAmountOz: Double?
 }
