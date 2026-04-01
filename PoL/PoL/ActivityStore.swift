@@ -17,9 +17,11 @@ final class SwiftDataActivityStore: ActivityStore {
 
     func saveEvent(from capture: CaptureEnvelope, inference: InferenceResult) throws {
         let frameCount = capture.metadata["frameCount"].flatMap(Int.init)
+        let eventTimestamp = inference.mentionedEventTime?.resolvedDate(relativeTo: capture.capturedAt)
+            ?? capture.capturedAt
         let event = ActivityEventRecord(
             label: inference.label,
-            timestamp: capture.capturedAt,
+            timestamp: eventTimestamp,
             sourceCaptureId: capture.id,
             confidence: inference.confidence,
             needsReview: inference.confidence < confidenceThreshold,

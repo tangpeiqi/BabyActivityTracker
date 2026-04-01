@@ -27,7 +27,8 @@ struct MockInferenceClient: InferenceClient {
             confidence: confidence,
             rationaleShort: rationale,
             modelVersion: "mock-v1",
-            feedingAmountOz: nil
+            feedingAmountOz: nil,
+            mentionedEventTime: nil
         )
     }
 }

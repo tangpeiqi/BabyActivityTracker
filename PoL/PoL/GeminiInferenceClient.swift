@@ -194,6 +194,8 @@ final class GeminiInferenceClient: InferenceClient {
         You classify baby-care media into one activity label.
         Allowed labels: diaperWet, diaperBowel, feeding, sleepStart, wakeUp, other.
         If label is feeding and amount in ounces is inferable, provide feedingAmountOz as a number with one decimal.
+        If spoken audio explicitly mentions what time the activity happened, provide mentionedEventTime24h in HH:mm 24-hour format.
+        Only provide mentionedEventTime24h when the time is explicitly stated in the audio or transcription. Do not infer or guess it from context.
         Use only evidence in the media.
         Return JSON only following the schema.
         Capture metadata: type=\(capture.captureType.rawValue), capturedAt=\(capture.capturedAt.ISO8601Format()).
@@ -386,6 +388,13 @@ private struct GeminiResponseSchema: Encodable {
                 minimum: 0,
                 maximum: 24,
                 maxLength: nil
+            ),
+            "mentionedEventTime24h": .init(
+                type: "STRING",
+                enumValues: nil,
+                minimum: nil,
+                maximum: nil,
+                maxLength: 5
             )
         ],
         required: ["label", "confidence", "rationaleShort"]
@@ -414,6 +423,7 @@ private struct GeminiModelOutput: Decodable {
     let rationaleShort: String
     let modelVersion: String?
     let feedingAmountOz: Double?
+    let mentionedEventTime24h: String?
 
     func toInferenceResult(fallbackModelVersion: String) -> InferenceResult {
         let mappedLabel = ActivityLabel(rawValue: label) ?? normalizeLabel(label)
@@ -427,7 +437,8 @@ private struct GeminiModelOutput: Decodable {
                 }
                 return fallbackModelVersion
             }(),
-            feedingAmountOz: normalizedFeedingAmountOz(for: mappedLabel)
+            feedingAmountOz: normalizedFeedingAmountOz(for: mappedLabel),
+            mentionedEventTime: normalizedMentionedEventTime()
         )
     }
 
@@ -435,6 +446,20 @@ private struct GeminiModelOutput: Decodable {
         guard label == .feeding, let feedingAmountOz else { return nil }
         let clamped = min(max(feedingAmountOz, 0), 24)
         return (clamped * 10).rounded() / 10
+    }
+
+    private func normalizedMentionedEventTime() -> MentionedEventTime? {
+        guard let mentionedEventTime24h else { return nil }
+        let trimmed = mentionedEventTime24h.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+        guard
+            components.count == 2,
+            let hour = Int(components[0]),
+            let minute = Int(components[1])
+        else {
+            return nil
+        }
+        return MentionedEventTime(hour: hour, minute: minute)
     }
 
     private func normalizeLabel(_ rawValue: String) -> ActivityLabel {

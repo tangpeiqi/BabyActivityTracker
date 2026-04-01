@@ -59,4 +59,37 @@ struct InferenceResult: Sendable {
     let rationaleShort: String
     let modelVersion: String
     let feedingAmountOz: Double?
+    let mentionedEventTime: MentionedEventTime?
+}
+
+struct MentionedEventTime: Sendable {
+    let hour: Int
+    let minute: Int
+
+    init?(hour: Int, minute: Int) {
+        guard (0...23).contains(hour), (0...59).contains(minute) else {
+            return nil
+        }
+        self.hour = hour
+        self.minute = minute
+    }
+
+    func resolvedDate(relativeTo recordingDate: Date, calendar: Calendar = .current) -> Date? {
+        var components = calendar.dateComponents([.year, .month, .day], from: recordingDate)
+        components.hour = hour
+        components.minute = minute
+        components.second = 0
+
+        guard var candidate = calendar.date(from: components) else {
+            return nil
+        }
+
+        // A spoken clock time refers to when the event already happened, so use
+        // the most recent occurrence of that time if the same-day value would be future-dated.
+        if candidate > recordingDate {
+            candidate = calendar.date(byAdding: .day, value: -1, to: candidate) ?? candidate
+        }
+
+        return candidate
+    }
 }
