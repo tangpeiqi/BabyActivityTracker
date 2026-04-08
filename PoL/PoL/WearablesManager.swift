@@ -19,7 +19,7 @@ struct WearablesDebugEvent: Identifiable {
 @MainActor
 final class WearablesManager: ObservableObject {
     @Published private(set) var registrationStateText: String = "unknown"
-    @Published private(set) var cameraPermissionText: String = "unknown"
+    @Published private(set) var cameraPermissionText: String = "Not granted"
     @Published private(set) var connectedDeviceCount: Int = 0
     @Published private(set) var configSummary: String = ""
     @Published private(set) var streamStateText: String = "stopped"
@@ -34,7 +34,6 @@ final class WearablesManager: ObservableObject {
     @Published private(set) var latestSegmentManifestURL: URL?
     @Published private(set) var latestSegmentEndedAt: Date?
     @Published private(set) var latestSegmentFrameCount: Int = 0
-    @Published private(set) var isActivitiesTabActive: Bool = false
     @Published private(set) var voiceCancelEnabled: Bool = false
     @Published private(set) var isVoiceCancelListening: Bool = false
 
@@ -177,7 +176,7 @@ final class WearablesManager: ObservableObject {
 
         do {
             let status = try await Wearables.shared.checkPermissionStatus(.camera)
-            cameraPermissionText = String(describing: status)
+            cameraPermissionText = displayText(forCameraPermissionStatus: status)
             lastError = nil
         } catch {
             lastError = formatError("Failed to check camera permission", error)
@@ -191,7 +190,7 @@ final class WearablesManager: ObservableObject {
 
         do {
             let status = try await Wearables.shared.requestPermission(.camera)
-            cameraPermissionText = String(describing: status)
+            cameraPermissionText = displayText(forCameraPermissionStatus: status)
             lastError = nil
         } catch {
             lastError = formatError("Failed to request camera permission", error)
@@ -213,10 +212,10 @@ final class WearablesManager: ObservableObject {
 
         do {
             let status = try await Wearables.shared.checkPermissionStatus(.camera)
-            cameraPermissionText = String(describing: status)
+            cameraPermissionText = displayText(forCameraPermissionStatus: status)
             if !isPermissionGranted(status) {
                 let requested = try await Wearables.shared.requestPermission(.camera)
-                cameraPermissionText = String(describing: requested)
+                cameraPermissionText = displayText(forCameraPermissionStatus: requested)
                 guard isPermissionGranted(requested) else {
                     lastError = "Camera permission not granted. Complete permission flow in Meta AI app and retry."
                     return
@@ -262,16 +261,6 @@ final class WearablesManager: ObservableObject {
     func clearDebugEvents() {
         debugEvents.removeAll()
         buttonLikeEventDetected = false
-    }
-
-    func setActivitiesTabActive(_ isActive: Bool) {
-        guard isActivitiesTabActive != isActive else { return }
-        isActivitiesTabActive = isActive
-        recordDebugEvent(
-            "activities_tab_state",
-            metadata: ["active": isActive ? "true" : "false"]
-        )
-        reevaluateVoiceCancelListening()
     }
 
     func setVoiceCancelEnabled(_ enabled: Bool) {
@@ -600,11 +589,6 @@ final class WearablesManager: ObservableObject {
                     recordDebugEvent("segment_pipeline_skipped", metadata: ["reason": "pipeline_missing"])
                     return
                 }
-                guard isActivitiesTabActive else {
-                    recordDebugEvent("segment_pipeline_skipped", metadata: ["reason": "not_activities_tab"])
-                    return
-                }
-
                 do {
                     let inference = try await pipeline.processVideoSegment(
                         manifestURL: persisted.manifestURL,
@@ -650,14 +634,6 @@ final class WearablesManager: ObservableObject {
             recordDebugEvent(
                 "audio_start_skipped",
                 metadata: ["segmentId": segmentID.uuidString, "reason": "voice_cancel_enabled"]
-            )
-            return
-        }
-
-        guard isActivitiesTabActive else {
-            recordDebugEvent(
-                "audio_start_skipped",
-                metadata: ["segmentId": segmentID.uuidString, "reason": "not_activities_tab"]
             )
             return
         }
@@ -768,6 +744,15 @@ final class WearablesManager: ObservableObject {
         text.lowercased() == "granted"
     }
 
+    private func displayText(forCameraPermissionStatus status: Any) -> String {
+        let normalized = String(describing: status)
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        return normalized == "granted" ? "Granted" : "Not granted"
+    }
+
     private func isWearablesActionURL(_ url: URL) -> Bool {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return false
@@ -847,7 +832,7 @@ final class WearablesManager: ObservableObject {
     }
 
     private func reevaluateVoiceCancelListening() {
-        let shouldListen = voiceCancelEnabled && isActivitiesTabActive && hasActiveStreamSession
+        let shouldListen = voiceCancelEnabled && hasActiveStreamSession
         if shouldListen {
             Task {
                 await startVoiceCancelListeningIfNeeded()

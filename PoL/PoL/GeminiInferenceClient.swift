@@ -195,6 +195,9 @@ final class GeminiInferenceClient: InferenceClient {
         Allowed labels: diaperWet, diaperBowel, feeding, sleepStart, wakeUp, other.
         If label is feeding and amount in ounces is inferable, provide feedingAmountOz as a number with one decimal.
         If spoken audio explicitly mentions what time the activity happened, provide mentionedEventTime24h in HH:mm 24-hour format.
+        If spoken audio explicitly mentions a relative date reference for when the activity happened, provide mentionedEventDayOffset as an integer:
+        -1 for yesterday, 0 for today, 1 for tomorrow.
+        Only provide mentionedEventDayOffset when the date reference is explicit in the audio or transcription. Do not infer or guess it from context.
         Only provide mentionedEventTime24h when the time is explicitly stated in the audio or transcription. Do not infer or guess it from context.
         Use only evidence in the media.
         Return JSON only following the schema.
@@ -395,6 +398,13 @@ private struct GeminiResponseSchema: Encodable {
                 minimum: nil,
                 maximum: nil,
                 maxLength: 5
+            ),
+            "mentionedEventDayOffset": .init(
+                type: "NUMBER",
+                enumValues: nil,
+                minimum: -7,
+                maximum: 7,
+                maxLength: nil
             )
         ],
         required: ["label", "confidence", "rationaleShort"]
@@ -424,6 +434,7 @@ private struct GeminiModelOutput: Decodable {
     let modelVersion: String?
     let feedingAmountOz: Double?
     let mentionedEventTime24h: String?
+    let mentionedEventDayOffset: Double?
 
     func toInferenceResult(fallbackModelVersion: String) -> InferenceResult {
         let mappedLabel = ActivityLabel(rawValue: label) ?? normalizeLabel(label)
@@ -449,17 +460,27 @@ private struct GeminiModelOutput: Decodable {
     }
 
     private func normalizedMentionedEventTime() -> MentionedEventTime? {
-        guard let mentionedEventTime24h else { return nil }
-        let trimmed = mentionedEventTime24h.trimmingCharacters(in: .whitespacesAndNewlines)
-        let components = trimmed.split(separator: ":", omittingEmptySubsequences: false)
-        guard
-            components.count == 2,
-            let hour = Int(components[0]),
-            let minute = Int(components[1])
-        else {
-            return nil
+        let normalizedDayOffset = normalizedMentionedEventDayOffset()
+
+        if let mentionedEventTime24h {
+            let trimmed = mentionedEventTime24h.trimmingCharacters(in: .whitespacesAndNewlines)
+            let components = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+            guard
+                components.count == 2,
+                let hour = Int(components[0]),
+                let minute = Int(components[1])
+            else {
+                return MentionedEventTime(hour: nil, minute: nil, dayOffset: normalizedDayOffset)
+            }
+            return MentionedEventTime(hour: hour, minute: minute, dayOffset: normalizedDayOffset)
         }
-        return MentionedEventTime(hour: hour, minute: minute)
+
+        return MentionedEventTime(hour: nil, minute: nil, dayOffset: normalizedDayOffset)
+    }
+
+    private func normalizedMentionedEventDayOffset() -> Int {
+        guard let mentionedEventDayOffset else { return 0 }
+        return min(7, max(-7, Int(mentionedEventDayOffset.rounded())))
     }
 
     private func normalizeLabel(_ rawValue: String) -> ActivityLabel {

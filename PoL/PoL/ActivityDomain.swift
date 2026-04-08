@@ -63,30 +63,40 @@ struct InferenceResult: Sendable {
 }
 
 struct MentionedEventTime: Sendable {
-    let hour: Int
-    let minute: Int
+    let hour: Int?
+    let minute: Int?
+    let dayOffset: Int
 
-    init?(hour: Int, minute: Int) {
-        guard (0...23).contains(hour), (0...59).contains(minute) else {
+    init?(hour: Int?, minute: Int?, dayOffset: Int = 0) {
+        if let hour, !(0...23).contains(hour) {
             return nil
         }
+        if let minute, !(0...59).contains(minute) {
+            return nil
+        }
+        guard (-7...7).contains(dayOffset) else { return nil }
+        guard (hour == nil) == (minute == nil) else { return nil }
+        guard hour != nil || dayOffset != 0 else { return nil }
         self.hour = hour
         self.minute = minute
+        self.dayOffset = dayOffset
     }
 
     func resolvedDate(relativeTo recordingDate: Date, calendar: Calendar = .current) -> Date? {
-        var components = calendar.dateComponents([.year, .month, .day], from: recordingDate)
-        components.hour = hour
-        components.minute = minute
+        let baseDate = calendar.date(byAdding: .day, value: dayOffset, to: recordingDate) ?? recordingDate
+        let baseTime = calendar.dateComponents([.hour, .minute], from: recordingDate)
+        var components = calendar.dateComponents([.year, .month, .day], from: baseDate)
+        components.hour = hour ?? baseTime.hour
+        components.minute = minute ?? baseTime.minute
         components.second = 0
 
         guard var candidate = calendar.date(from: components) else {
             return nil
         }
 
-        // A spoken clock time refers to when the event already happened, so use
-        // the most recent occurrence of that time if the same-day value would be future-dated.
-        if candidate > recordingDate {
+        // If only a clock time was mentioned, keep the previous "most recent occurrence"
+        // behavior so future-dated same-day times resolve to the prior day.
+        if dayOffset == 0, hour != nil, minute != nil, candidate > recordingDate {
             candidate = calendar.date(byAdding: .day, value: -1, to: candidate) ?? candidate
         }
 

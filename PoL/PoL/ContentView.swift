@@ -9,6 +9,32 @@ import SwiftUI
 import SwiftData
 import UIKit
 
+private enum AppTextRole {
+    case body
+    case bodyEmphasis
+    case supporting
+    case micro
+
+    var font: Font {
+        switch self {
+        case .body:
+            return .system(size: 16, weight: .regular)
+        case .bodyEmphasis:
+            return .system(size: 16, weight: .semibold)
+        case .supporting:
+            return .system(size: 12, weight: .regular)
+        case .micro:
+            return .system(size: 10, weight: .medium)
+        }
+    }
+}
+
+private extension Text {
+    func appText(_ role: AppTextRole) -> Text {
+        font(role.font)
+    }
+}
+
 struct ContentView: View {
     private let bottomNavigationReservedHeight: CGFloat = 144
 
@@ -52,6 +78,7 @@ struct ContentView: View {
     @State private var isDiaperGraphEnabled = true
     @State private var isSleepGraphEnabled = true
     @State private var settingsDestination: SettingsDestination?
+    @State private var activeTimelineSwipeEventID: UUID?
     @Namespace private var bottomTabSelectionNamespace
 
     private struct ActivityValueEditor: Identifiable {
@@ -66,6 +93,193 @@ struct ContentView: View {
 
         var id: String {
             "\(event.id.uuidString)-\(mode.rawValue)"
+        }
+    }
+
+    private struct ActivityTimelineSwipeRow<Content: View>: View {
+        let eventID: UUID
+        @Binding var activeEventID: UUID?
+        let onEdit: () -> Void
+        let onDelete: () -> Void
+        let roundsTopCorners: Bool
+        let roundsBottomCorners: Bool
+        let content: Content
+
+        @State private var settledOffset: CGFloat = 0
+        @State private var liveDragOffset: CGFloat?
+        @State private var dragStartOffset: CGFloat?
+        private let actionWidth: CGFloat = 152
+        private let swipeActivationDistance: CGFloat = 24
+        private let snapOpenThreshold: CGFloat = 76
+
+        init(
+            eventID: UUID,
+            activeEventID: Binding<UUID?>,
+            onEdit: @escaping () -> Void,
+            onDelete: @escaping () -> Void,
+            roundsTopCorners: Bool = false,
+            roundsBottomCorners: Bool = false,
+            @ViewBuilder content: () -> Content
+        ) {
+            self.eventID = eventID
+            self._activeEventID = activeEventID
+            self.onEdit = onEdit
+            self.onDelete = onDelete
+            self.roundsTopCorners = roundsTopCorners
+            self.roundsBottomCorners = roundsBottomCorners
+            self.content = content()
+        }
+
+        private var isActionAreaVisible: Bool {
+            currentOffset < -1
+        }
+
+        private var rowShape: some Shape {
+            UnevenRoundedRectangle(
+                cornerRadii: .init(
+                    topLeading: roundsTopCorners ? 24 : 0,
+                    bottomLeading: roundsBottomCorners ? 24 : 0,
+                    bottomTrailing: roundsBottomCorners ? 24 : 0,
+                    topTrailing: roundsTopCorners ? 24 : 0
+                )
+            )
+        }
+
+        var body: some View {
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 0) {
+                    Spacer()
+                    actionButton(
+                        title: "Edit",
+                        systemImage: "pencil",
+                        color: .blue,
+                        action: {
+                            settledOffset = 0
+                            activeEventID = nil
+                            onEdit()
+                        }
+                    )
+                    actionButton(
+                        title: "Delete",
+                        systemImage: "trash",
+                        color: .red,
+                        action: {
+                            settledOffset = 0
+                            activeEventID = nil
+                            onDelete()
+                        }
+                    )
+                }
+                .opacity(isActionAreaVisible ? 1 : 0)
+                .allowsHitTesting(isActionAreaVisible)
+
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.white)
+                    .contentShape(Rectangle())
+                    .offset(x: currentOffset)
+                    .simultaneousGesture(dragGesture)
+            }
+            .clipped()
+            .clipShape(rowShape)
+            .mask(rowShape)
+            .onChange(of: activeEventID) { _, newValue in
+                if newValue != eventID, settledOffset != 0 {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                        settledOffset = 0
+                    }
+                }
+            }
+        }
+
+        private var currentOffset: CGFloat {
+            liveDragOffset ?? settledOffset
+        }
+
+        private func clampedOffset(
+            for translation: CGFloat,
+            startingFrom startOffset: CGFloat
+        ) -> CGFloat {
+            let lowerBound = -actionWidth
+            let upperBound: CGFloat = startOffset < 0 ? actionWidth : 0
+            let clampedTranslation = min(max(translation, lowerBound), upperBound)
+            return max(-actionWidth, min(0, startOffset + clampedTranslation))
+        }
+
+        private var dragGesture: some Gesture {
+            DragGesture(minimumDistance: swipeActivationDistance, coordinateSpace: .local)
+                .onChanged { value in
+                    let horizontal = value.translation.width
+                    let vertical = value.translation.height
+                    guard
+                        abs(horizontal) > abs(vertical),
+                        abs(horizontal) > swipeActivationDistance
+                    else { return }
+
+                    let startOffset = dragStartOffset ?? settledOffset
+                    if dragStartOffset == nil {
+                        dragStartOffset = startOffset
+                    }
+
+                    liveDragOffset = clampedOffset(
+                        for: horizontal,
+                        startingFrom: startOffset
+                    )
+                }
+                .onEnded { value in
+                    defer {
+                        dragStartOffset = nil
+                        liveDragOffset = nil
+                    }
+
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+
+                    let startOffset = dragStartOffset ?? settledOffset
+                    let currentDragOffset = liveDragOffset ?? clampedOffset(
+                        for: value.translation.width,
+                        startingFrom: startOffset
+                    )
+
+                    if startOffset == 0, activeEventID != eventID {
+                        guard value.translation.width < -swipeActivationDistance else { return }
+                    }
+
+                    settledOffset = currentDragOffset
+
+                    let clampedPredicted = clampedOffset(
+                        for: value.predictedEndTranslation.width,
+                        startingFrom: startOffset
+                    )
+                    let targetOffset: CGFloat = clampedPredicted < -snapOpenThreshold ? -actionWidth : 0
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                        settledOffset = targetOffset
+                        activeEventID = targetOffset == 0 ? nil : eventID
+                    }
+                }
+        }
+
+        @ViewBuilder
+        private func actionButton(
+            title: String,
+            systemImage: String,
+            color: Color,
+            action: @escaping () -> Void
+        ) -> some View {
+            Button(action: action) {
+                VStack(spacing: 6) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(title)
+                        .appText(.bodyEmphasis)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(width: actionWidth / 2)
+            .frame(maxHeight: .infinity)
+            .background(color)
         }
     }
 
@@ -100,33 +314,13 @@ struct ContentView: View {
                     }
                 case .activities:
                     NavigationStack {
-                        Form {
-                            Section {
-                                if wearablesManager.hasActiveStreamSession {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        Image(systemName: "hand.tap.fill")
-                                            .foregroundStyle(.blue)
-                                        Text("Tap once on the glasses touch pad when you are ready to log the activity, tap again to finish logging.")
-                                            .font(.footnote.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                    }
-                                    .padding(10)
-                                    .background(.blue.opacity(0.18))
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                                    Button("Cancel Session (Discard Capture)", role: .destructive) {
-                                        Task {
-                                            await wearablesManager.cancelCurrentSession()
-                                        }
-                                    }
-                                }
-                            }
-
-                            let visibleEvents = timelineEvents.filter { !$0.isDeleted }
-                            if visibleEvents.isEmpty {
-                                Section {
-                                    Text("No activity events yet. End a segment to create one.")
-                                        .foregroundStyle(.secondary)
+                Form {
+                    let visibleEvents = timelineEvents.filter { !$0.isDeleted }
+                    if visibleEvents.isEmpty {
+                        Section {
+                            Text("No activity events yet. End a segment to create one.")
+                                .appText(.body)
+                                .foregroundStyle(.secondary)
                                 }
                             } else {
                                 let calendar = Calendar.current
@@ -155,14 +349,6 @@ struct ContentView: View {
                 case .settings:
                     NavigationStack {
                         Form {
-                            if let error = wearablesManager.lastError {
-                                Section {
-                                    Text(error)
-                                        .foregroundStyle(.red)
-                                        .font(.footnote)
-                                }
-                            }
-
                             if !wearablesManager.isDeviceRegistered {
                                 Section {
                                     widgetRow {
@@ -173,25 +359,42 @@ struct ContentView: View {
                                 }
                             }
 
-                            Section("Diagnostics") {
+                            Section {
                                 widgetRow {
-                                    widgetCard {
-                                        VStack(spacing: 0) {
-                                            statusRow("Camera Permission", wearablesManager.cameraPermissionText)
-                                                .padding(.vertical, 12)
-                                            Divider()
-                                            diagnosticNavigationRow("Debug Logs") {
-                                                settingsDestination = .debugLogs
+                                    VStack(spacing: 24) {
+                                        widgetCard {
+                                            VStack(alignment: .leading, spacing: 0) {
+                                                statusRow("Camera Permission", wearablesManager.cameraPermissionText)
+                                                    .padding(.vertical, 12)
+
+                                                if let settingsCardError {
+                                                    Divider()
+                                                    Text(settingsCardError)
+                                                        .foregroundStyle(.red)
+                                                        .appText(.body)
+                                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                                        .padding(.vertical, 12)
+                                                }
                                             }
-                                            .padding(.vertical, 12)
-                                            Divider()
-                                            diagnosticNavigationRow("Live Preview") {
-                                                settingsDestination = .livePreview
-                                            }
-                                            .padding(.vertical, 12)
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 8)
                                         }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
+
+                                        widgetCard {
+                                            VStack(spacing: 0) {
+                                                diagnosticNavigationRow("Debug Logs") {
+                                                    settingsDestination = .debugLogs
+                                                }
+                                                .padding(.vertical, 12)
+                                                Divider()
+                                                diagnosticNavigationRow("Live Preview") {
+                                                    settingsDestination = .livePreview
+                                                }
+                                                .padding(.vertical, 12)
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 8)
+                                        }
                                     }
                                 }
                                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
@@ -235,14 +438,16 @@ struct ContentView: View {
                     .allowsHitTesting(false)
 
                 bottomNavigationWidget
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 21)
                     .padding(.top, 8)
                     .padding(.bottom, 21)
             }
             .ignoresSafeArea(edges: .bottom)
         }
-        .onChange(of: selectedTab) { _, newValue in
-            wearablesManager.setActivitiesTabActive(newValue == .activities)
+        .onChange(of: selectedTab) { _, _ in
+            if selectedTab != .activities {
+                activeTimelineSwipeEventID = nil
+            }
             updateIdleTimerPolicy()
         }
         .onChange(of: scenePhase) { _, _ in
@@ -253,7 +458,6 @@ struct ContentView: View {
         }
         .task {
             wearablesManager.configurePipelineIfNeeded(modelContext: modelContext)
-            wearablesManager.setActivitiesTabActive(selectedTab == .activities)
             updateIdleTimerPolicy()
         }
         .onDisappear {
@@ -269,28 +473,19 @@ struct ContentView: View {
         ) {
             NavigationStack {
                 Form {
-                    if let event = eventPendingEdit {
-                        Section("Current") {
-                            Text(event.label.displayName)
-                                .font(.headline)
-                            Text(event.timestamp.formatted(date: .omitted, time: .shortened))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
                     Section("Activity Type") {
-                        Picker("Activity Type", selection: $activityTypeDraft) {
+                        Picker("", selection: $activityTypeDraft) {
                             ForEach(editableActivityLabels, id: \.self) { label in
                                 Text(label.displayName).tag(label)
                             }
                         }
                         .pickerStyle(.inline)
+                        .labelsHidden()
                     }
 
                     Section("Time Logged") {
                         DatePicker(
-                            "Event Time",
+                            "",
                             selection: $timeDraft,
                             displayedComponents: .hourAndMinute
                         )
@@ -348,6 +543,16 @@ struct ContentView: View {
                             .pickerStyle(.segmented)
                         }
                     case .time:
+                        Section("Date") {
+                            DatePicker(
+                                "Event Date",
+                                selection: $timeDraft,
+                                displayedComponents: .date
+                            )
+                            .datePickerStyle(.graphical)
+                            .labelsHidden()
+                        }
+
                         Section("Time") {
                             DatePicker(
                                 "Event Time",
@@ -452,8 +657,10 @@ struct ContentView: View {
     private func statusRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label)
+                .appText(.body)
             Spacer()
             Text(value)
+                .appText(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
         }
@@ -463,7 +670,9 @@ struct ContentView: View {
     private func statusTwoLineRow(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
+                .appText(.body)
             Text(value)
+                .appText(.supporting)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -698,6 +907,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
             }
+            .id(orderedDayGroups.map(\.id))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -714,7 +924,7 @@ struct ContentView: View {
                     }
                 }
             Text(weekdayLetter(for: day))
-                .font(.system(size: 16, weight: .regular))
+                .appText(.body)
                 .foregroundStyle(.black)
         }
         .frame(width: 48, height: 48)
@@ -727,16 +937,23 @@ struct ContentView: View {
         width: CGFloat,
         height: CGFloat
     ) -> some View {
+        let visualWindow = graphWindow(for: dayGroup.displayDate)
         let dayEvents = events.filter { event in
-            event.timestamp >= dayGroup.start && event.timestamp < dayGroup.end
+            event.timestamp >= visualWindow.start && event.timestamp < visualWindow.end
         }
         let feedingEvents = dayEvents.filter { $0.label == .feeding }
         let diaperEvents = dayEvents.filter {
             $0.label == .diaperWet || $0.label == .diaperBowel || $0.diaperChangeValue != nil
         }
         let daySleepSegments = sleepIntervals.compactMap { interval -> (start: Date, end: Date)? in
-            let start = max(interval.start, dayGroup.start)
-            let end = min(interval.end, dayGroup.end)
+            guard Calendar.current.isDate(
+                displayDate(forSleepIntervalStartingAt: interval.start),
+                inSameDayAs: dayGroup.displayDate
+            ) else {
+                return nil
+            }
+            let start = max(interval.start, visualWindow.start)
+            let end = min(interval.end, visualWindow.end)
             return end > start ? (start, end) : nil
         }
 
@@ -746,7 +963,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color(red: 0.52, green: 0.18, blue: 0.56))
                         .frame(width: width, height: 8)
-                        .offset(x: 0, y: yPosition(for: event.timestamp, in: dayGroup.start, chartHeight: height) - 4)
+                        .offset(x: 0, y: yPosition(for: event.timestamp, in: visualWindow.start, chartHeight: height) - 4)
                 }
             }
 
@@ -755,7 +972,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color(red: 0.53, green: 0.46, blue: 0.03))
                         .frame(width: width, height: 8)
-                        .offset(x: 0, y: yPosition(for: event.timestamp, in: dayGroup.start, chartHeight: height) - 4)
+                        .offset(x: 0, y: yPosition(for: event.timestamp, in: visualWindow.start, chartHeight: height) - 4)
                 }
             }
 
@@ -767,13 +984,13 @@ struct ContentView: View {
                             width: width,
                             height: max(
                                 8,
-                                yPosition(for: segment.end, in: dayGroup.start, chartHeight: height)
-                                - yPosition(for: segment.start, in: dayGroup.start, chartHeight: height)
+                                yPosition(for: segment.end, in: visualWindow.start, chartHeight: height)
+                                - yPosition(for: segment.start, in: visualWindow.start, chartHeight: height)
                             )
                         )
                         .offset(
                             x: 0,
-                            y: yPosition(for: segment.start, in: dayGroup.start, chartHeight: height)
+                            y: yPosition(for: segment.start, in: visualWindow.start, chartHeight: height)
                         )
                 }
             }
@@ -792,7 +1009,7 @@ struct ContentView: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Text(title)
-                    .font(.system(size: 16, weight: .regular))
+                    .appText(.body)
                     .foregroundStyle(color)
 
                 Spacer(minLength: 12)
@@ -821,102 +1038,17 @@ struct ContentView: View {
     private func summaryGraphDayGroups(from events: [ActivityEventRecord]) -> [SummaryGraphDayGroup] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
-
-        if events.isEmpty {
-            return (0..<7).compactMap { offset in
-                guard let displayDate = calendar.date(byAdding: .day, value: -offset, to: today) else {
-                    return nil
-                }
-                let window = graphWindow(for: displayDate)
-                return SummaryGraphDayGroup(
-                    start: window.start,
-                    end: window.end,
-                    displayDate: displayDate
-                )
+        return (0..<21).compactMap { offset in
+            guard let displayDate = calendar.date(byAdding: .day, value: -offset, to: today) else {
+                return nil
             }
-        }
-
-        let sorted = events.sorted { $0.timestamp < $1.timestamp }
-        var dayStartMarkers: [Date] = [sorted[0].timestamp]
-        var nightSleepOpen = false
-        var pendingNightWake: Date?
-
-        for event in sorted {
-            if event.label == .sleepStart, isNightSleepStart(event.timestamp) {
-                nightSleepOpen = true
-                pendingNightWake = nil
-                continue
-            }
-
-            if event.label == .wakeUp, nightSleepOpen {
-                pendingNightWake = event.timestamp
-                nightSleepOpen = false
-                continue
-            }
-
-            let isNonSleepActivity = event.label != .sleepStart && event.label != .wakeUp
-            if isNonSleepActivity, let activePendingNightWake = pendingNightWake, event.timestamp > activePendingNightWake {
-                if let last = dayStartMarkers.last, event.timestamp > last {
-                    dayStartMarkers.append(event.timestamp)
-                }
-                pendingNightWake = nil
-            }
-        }
-
-        let timelineEnd = max(sorted.last?.timestamp ?? .now, .now)
-        var groups: [SummaryGraphDayGroup] = []
-
-        for index in dayStartMarkers.indices {
-            let start = dayStartMarkers[index]
-            let end = index + 1 < dayStartMarkers.count
-                ? dayStartMarkers[index + 1]
-                : timelineEnd.addingTimeInterval(1)
-            let labelTimestamp = sorted.first(where: { event in
-                event.timestamp >= start
-                    && event.timestamp < end
-                    && event.label != .sleepStart
-                    && event.label != .wakeUp
-            })?.timestamp ?? start
-            groups.append(
-                SummaryGraphDayGroup(
-                    start: start,
-                    end: end,
-                    displayDate: calendar.startOfDay(for: labelTimestamp)
-                )
+            let window = graphWindow(for: displayDate)
+            return SummaryGraphDayGroup(
+                start: window.start,
+                end: window.end,
+                displayDate: displayDate
             )
         }
-
-        var newestFirst = Array(groups.reversed())
-        if let newestDisplayDate = newestFirst.first?.displayDate {
-            var nextDate = calendar.date(byAdding: .day, value: 1, to: newestDisplayDate)
-            while let candidateDate = nextDate, candidateDate <= today {
-                let window = graphWindow(for: candidateDate)
-                newestFirst.insert(
-                    SummaryGraphDayGroup(
-                        start: window.start,
-                        end: window.end,
-                        displayDate: candidateDate
-                    ),
-                    at: 0
-                )
-                nextDate = calendar.date(byAdding: .day, value: 1, to: candidateDate)
-            }
-        }
-
-        while newestFirst.count < 7 {
-            let referenceDate = newestFirst.last?.displayDate ?? today
-            guard let previousDate = calendar.date(byAdding: .day, value: -1, to: referenceDate) else { break }
-            let window = graphWindow(for: previousDate)
-            newestFirst.append(
-                SummaryGraphDayGroup(
-                    start: window.start,
-                    end: window.end,
-                    displayDate: previousDate
-                )
-            )
-        }
-
-        return Array(newestFirst.prefix(21))
     }
 
     private func isNightSleepStart(_ timestamp: Date) -> Bool {
@@ -943,6 +1075,16 @@ struct ContentView: View {
         return intervals
     }
 
+    private func displayDate(forSleepIntervalStartingAt start: Date) -> Date {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: start)
+        let hour = calendar.component(.hour, from: start)
+        if hour < 7 {
+            return calendar.date(byAdding: .day, value: -1, to: startOfDay) ?? startOfDay
+        }
+        return startOfDay
+    }
+
     private func graphWindow(for day: Date) -> (start: Date, end: Date) {
         let calendar = Calendar.current
         let dayStart = calendar.startOfDay(for: day)
@@ -958,7 +1100,8 @@ struct ContentView: View {
 
     private func yPosition(forHour hour: Double, chartHeight: CGFloat) -> CGFloat {
         let normalized = max(8, min(32, hour))
-        return CGFloat((normalized - 8) / 24.0) * chartHeight
+        let position = CGFloat((normalized - 8) / 24.0) * chartHeight
+        return min(position, max(chartHeight - 1, 0))
     }
 
     private func weekdayLetter(for day: Date) -> String {
@@ -971,21 +1114,21 @@ struct ContentView: View {
     private func summaryGraphTimeLabel(_ label: String) -> some View {
         if label == "Noon" {
             Text(label)
-                .font(.system(size: 12, weight: .regular))
+                .appText(.supporting)
                 .foregroundStyle(.black)
         } else {
             let parts = label.split(separator: " ")
             if let hour = parts.first, let meridiem = parts.last {
                 let hourText = Text(String(hour))
-                    .font(.system(size: 12, weight: .regular))
+                    .appText(.supporting)
                     .foregroundStyle(.black)
                 let meridiemText = Text(String(meridiem))
-                    .font(.system(size: 8, weight: .regular))
+                    .appText(.micro)
                     .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
                 Text("\(hourText) \(meridiemText)")
             } else {
                 Text(label)
-                    .font(.system(size: 12, weight: .regular))
+                    .appText(.supporting)
                     .foregroundStyle(.black)
             }
         }
@@ -1001,7 +1144,7 @@ struct ContentView: View {
     ) -> some View {
         HStack(spacing: 12) {
             Text(title)
-                .font(.system(size: 16, weight: .regular))
+                .appText(.body)
                 .foregroundStyle(titleColor)
             Spacer()
             summaryElapsedTimeValueText(
@@ -1033,40 +1176,51 @@ struct ContentView: View {
     ) -> Text {
         guard let timestamp else {
             return Text("No record")
-                .font(.system(size: 16, weight: .regular))
+                .appText(.body)
                 .foregroundStyle(.gray)
         }
 
         let elapsedTime = elapsedTimeComponents(since: timestamp)
+        let elapsedSeconds = elapsedTimeInterval(since: timestamp)
         let prefixText = Text("for")
-            .font(.system(size: 16, weight: .medium))
+            .appText(.body)
             .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
         let suffixAgoText = Text(" ago")
-            .font(.system(size: 16, weight: .regular))
+            .appText(.body)
             .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
         let suffixNowText = Text(" now")
-            .font(.system(size: 16, weight: .regular))
+            .appText(.body)
             .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
         let leadingSpace = Text(" ")
-            .font(.system(size: 16, weight: .regular))
+            .appText(.body)
             .foregroundStyle(.clear)
         let hourValueText = Text(elapsedTime.hours)
-            .font(.system(size: 16, weight: .bold))
+            .appText(.body)
             .foregroundStyle(timeColor)
         let hourUnitText = Text("h")
-            .font(.system(size: 12, weight: .regular))
+            .appText(.supporting)
             .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
         let hourText = Text("\(hourValueText)\(hourUnitText)")
         let minuteValueText = Text(elapsedTime.minutes)
-            .font(.system(size: 16, weight: .bold))
+            .appText(.body)
             .foregroundStyle(timeColor)
         let minuteUnitText = Text("m")
-            .font(.system(size: 12, weight: .regular))
+            .appText(.supporting)
             .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
         let minuteText = Text("\(minuteValueText)\(minuteUnitText)")
+        let moreThanOneDayValueText = Text("more than 1")
+            .appText(.body)
+            .foregroundStyle(timeColor)
+        let dayUnitText = Text("d")
+            .appText(.supporting)
+            .foregroundStyle(Color(red: 0.36, green: 0.36, blue: 0.36))
+        let moreThanOneDayText = Text("\(moreThanOneDayValueText)\(dayUnitText)")
 
         switch mode {
         case .ago:
+            if elapsedSeconds > 86_400 {
+                return Text("\(moreThanOneDayText)\(suffixAgoText)")
+            }
             return Text("\(hourText)\(minuteText)\(suffixAgoText)")
         case .forNow:
             return Text("\(prefixText)\(leadingSpace)\(hourText)\(minuteText)\(suffixNowText)")
@@ -1075,10 +1229,15 @@ struct ContentView: View {
 
     private func elapsedTimeComponents(since timestamp: Date?) -> (hours: String, minutes: String) {
         guard let timestamp else { return ("0", "00") }
-        let seconds = max(0, Int(Date().timeIntervalSince(timestamp)))
+        let seconds = elapsedTimeInterval(since: timestamp)
         let totalHours = seconds / 3_600
         let minutes = (seconds % 3_600) / 60
         return ("\(totalHours)", String(format: "%02d", minutes))
+    }
+
+    private func elapsedTimeInterval(since timestamp: Date?) -> Int {
+        guard let timestamp else { return 0 }
+        return max(0, Int(Date().timeIntervalSince(timestamp)))
     }
 
     private enum CameraStreamLayoutState {
@@ -1092,16 +1251,21 @@ struct ContentView: View {
         Button(action: action) {
             HStack {
                 Text(title)
+                    .appText(.bodyEmphasis)
                     .foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.body.weight(.semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var settingsCardError: String? {
+        wearablesManager.lastError
     }
 
     private var bottomWidgetState: BottomWidgetState {
@@ -1121,17 +1285,19 @@ struct ContentView: View {
         }
     }
 
-    private var bottomWidgetTooltip: (text: String, color: Color)? {
+    private var bottomWidgetTooltip: (text: String, color: Color, showsIllustration: Bool)? {
         switch bottomWidgetState {
         case .initialStreaming:
             return (
                 "To get ready for logging, tap the glasses' touch pad to pause streaming.",
-                Color(red: 0.0, green: 0.25, blue: 0.35)
+                Color(red: 0.93, green: 0.35, blue: 0.35),
+                true
             )
         case .firstPaused:
             return (
                 "Great! Tap on the glasses' touch pad when you want to log an activity, tap again to finish logging.",
-                Color(red: 0.25, green: 0.37, blue: 0.27)
+                Color(red: 0.25, green: 0.37, blue: 0.27),
+                false
             )
         default:
             return nil
@@ -1156,28 +1322,28 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(day.formatted(date: .abbreviated, time: .omitted))
-                        .font(.footnote.weight(.semibold))
+                        .font(.headline)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 16)
 
                     VStack(spacing: 0) {
                         ForEach(Array(eventsForDay.enumerated()), id: \.element.id) { eventIndex, event in
-                            activityTimelineCard(for: event)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button {
-                                        eventPendingDelete = event
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                    .tint(.red)
-
-                                    Button {
-                                        eventPendingEdit = event
-                                    } label: {
-                                        Label("Edit", systemImage: "pencil")
-                                    }
-                                    .tint(.blue)
+                            ActivityTimelineSwipeRow(
+                                eventID: event.id,
+                                activeEventID: $activeTimelineSwipeEventID,
+                                onEdit: {
+                                    eventPendingEdit = event
+                                },
+                                onDelete: {
+                                    eventPendingDelete = event
+                                },
+                                roundsTopCorners: eventIndex == 0,
+                                roundsBottomCorners: eventIndex == eventsForDay.count - 1,
+                                content: {
+                                    activityTimelineCard(for: event)
                                 }
+                            )
+                            .background(.white)
 
                             if eventIndex < eventsForDay.count - 1 {
                                 Rectangle()
@@ -1201,8 +1367,9 @@ struct ContentView: View {
     private func activityTimelineCard(for event: ActivityEventRecord) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(event.timestamp.formatted(date: .omitted, time: .shortened))
-                .font(.system(size: 12, weight: .medium))
+                .appText(.supporting)
                 .foregroundStyle(Color(red: 0.45, green: 0.45, blue: 0.45))
+                .padding(.top, 16)
                 .padding(.horizontal, 16)
 
             HStack(spacing: 0) {
@@ -1212,7 +1379,7 @@ struct ContentView: View {
 
                 HStack(alignment: .center, spacing: 12) {
                     Text(activityCardTitle(for: event))
-                        .font(.system(size: 16, weight: .bold))
+                        .appText(.bodyEmphasis)
                         .foregroundStyle(activityCardAccentColor(for: event))
 
                     Spacer(minLength: 0)
@@ -1221,7 +1388,7 @@ struct ContentView: View {
                        let valueAction = valueAction(for: event, mode: editorMode) {
                         Button(action: valueAction) {
                             Text(activityCardVariableText(for: event, mode: editorMode))
-                                .font(.system(size: 16, weight: .bold))
+                                .appText(.bodyEmphasis)
                                 .foregroundStyle(activityCardAccentColor(for: event))
                                 .multilineTextAlignment(.trailing)
                         }
@@ -1233,16 +1400,16 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(event.rationaleShort)
-                    .font(.system(size: 12, weight: .regular))
+                    .appText(.supporting)
                     .foregroundStyle(Color(red: 0.45, green: 0.45, blue: 0.45))
 
                 HStack(spacing: 8) {
                     Text("Confidence: \(event.confidence.formatted(.number.precision(.fractionLength(2))))")
-                        .font(.system(size: 12, weight: .regular))
+                        .appText(.supporting)
                         .foregroundStyle(Color(red: 0.45, green: 0.45, blue: 0.45))
                     if event.needsReview {
                         Text("Needs Review")
-                            .font(.system(size: 12, weight: .regular))
+                            .appText(.supporting)
                             .foregroundStyle(.black)
                             .padding(.horizontal, 4)
                             .background(Color(red: 0.82, green: 0.82, blue: 0.82))
@@ -1251,8 +1418,8 @@ struct ContentView: View {
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.bottom, 16)
         }
-        .padding(.vertical, 16)
     }
 
     private func valueEditorTitle(for mode: ActivityValueEditor.Mode) -> String {
@@ -1414,15 +1581,15 @@ struct ContentView: View {
             editor.event.needsReview = false
         case .time:
             let calendar = Calendar.current
-            let components = calendar.dateComponents([.hour, .minute], from: timeDraft)
-            if let hour = components.hour,
-               let minute = components.minute,
-               let updated = calendar.date(
-                bySettingHour: hour,
-                minute: minute,
-                second: 0,
-                of: editor.event.timestamp
-               ) {
+            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: timeDraft)
+            if let updated = calendar.date(from: DateComponents(
+                year: components.year,
+                month: components.month,
+                day: components.day,
+                hour: components.hour,
+                minute: components.minute,
+                second: 0
+            )) {
                 editor.event.timestamp = updated
             } else {
                 timelineActionError = "Failed to update time."
@@ -1485,7 +1652,8 @@ struct ContentView: View {
     }
 
     private func deleteActivity(_ event: ActivityEventRecord) {
-        event.isDeleted = true
+        activeTimelineSwipeEventID = nil
+        modelContext.delete(event)
         persistTimelineChanges()
         eventPendingDelete = nil
     }
@@ -1606,7 +1774,7 @@ struct ContentView: View {
                     )
 
                 Text(title)
-                    .font(.system(size: 16, weight: .bold))
+                    .appText(.bodyEmphasis)
                     .foregroundStyle(textColor)
             }
             .frame(maxWidth: .infinity)
@@ -1632,31 +1800,83 @@ struct ContentView: View {
     private var bottomNavigationWidget: some View {
         VStack(spacing: 0) {
             if let tooltip = bottomWidgetTooltip {
-                Text(tooltip.text)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
+                VStack(alignment: .leading, spacing: 4) {
+                    if tooltip.showsIllustration {
+                        readyToLogTooltipIllustration
+                    }
+
+                    Text(tooltip.text)
+                        .appText(.body)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 24)
             }
 
             VStack(spacing: 8) {
                 if bottomWidgetState != .tabsOnly {
                     bottomWidgetAccessory
-                        .padding(16)
+                        .padding(.top, 12)
+                        .padding(.leading, 12)
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 4)
                 }
 
                 bottomTabBar
             }
             .background(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
             .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 0)
         }
         .background {
             if let tooltip = bottomWidgetTooltip {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                RoundedRectangle(cornerRadius: 40, style: .continuous)
                     .fill(tooltip.color)
             }
         }
+    }
+
+    @ViewBuilder
+    private var readyToLogTooltipIllustration: some View {
+        if let image = bundledImage(named: "Tap Glasses") {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 72, height: 44)
+        } else {
+            readyToLogTooltipIllustrationFallback
+        }
+    }
+
+    private var readyToLogTooltipIllustrationFallback: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: "hand.tap.fill")
+                .font(.system(size: 32, weight: .bold))
+                .foregroundStyle(.white)
+
+            Image(systemName: "wave.3.right")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white.opacity(0.95))
+                .offset(x: 10, y: -4)
+        }
+        .frame(width: 72, height: 44, alignment: .leading)
+    }
+
+    private func bundledImage(named name: String) -> UIImage? {
+        let directPath = Bundle.main.path(forResource: name, ofType: "png", inDirectory: nil)
+        let discoveredPath = Bundle.main.urls(forResourcesWithExtension: "png", subdirectory: nil)?
+            .first(where: { $0.deletingPathExtension().lastPathComponent == name })?
+            .path
+
+        guard let imagePath = directPath ?? discoveredPath,
+              let image = UIImage(contentsOfFile: imagePath),
+              let cgImage = image.cgImage else {
+            return nil
+        }
+
+        return UIImage(cgImage: cgImage, scale: 4.0, orientation: image.imageOrientation)
     }
 
     @ViewBuilder
@@ -1678,16 +1898,16 @@ struct ContentView: View {
             }
         } label: {
             Text("Request camera permission")
-                .font(.system(size: 16, weight: .bold))
+                .appText(.bodyEmphasis)
                 .foregroundStyle(Color(red: 0.0, green: 0.25, blue: 0.35))
                 .frame(maxWidth: .infinity)
                 .frame(height: 64)
                 .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
                         .fill(.white)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
                         .stroke(Color(red: 0.0, green: 0.25, blue: 0.35), lineWidth: 1)
                 )
         }
@@ -1699,10 +1919,10 @@ struct ContentView: View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Glasses Camera")
-                    .font(.system(size: 16, weight: .medium))
+                    .appText(.body)
                     .foregroundStyle(.black)
                 Text(bottomCameraStatusText)
-                    .font(.system(size: 16, weight: .medium))
+                    .appText(.body)
                     .foregroundStyle(Color(red: 0.53, green: 0.53, blue: 0.53))
             }
 
@@ -1725,14 +1945,14 @@ struct ContentView: View {
     }
 
     private var bottomTabBar: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 16) {
             bottomTabButton(for: .summary, title: "Summary", systemImage: "chart.bar")
             bottomTabButton(for: .activities, title: "Activities", systemImage: "list.bullet.rectangle")
             bottomTabButton(for: .settings, title: "Settings", systemImage: "gearshape")
         }
-        .padding(2)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .frame(height: 62)
     }
 
     private func bottomTabButton(for tab: AppTab, title: String, systemImage: String) -> some View {
@@ -1760,7 +1980,7 @@ struct ContentView: View {
                             : .black.opacity(0.65)
                         )
                     Text(title)
-                        .font(.system(size: 10, weight: .medium))
+                        .appText(.micro)
                         .foregroundStyle(
                             isSelected
                             ? accentColor
@@ -1772,6 +1992,7 @@ struct ContentView: View {
                 .frame(width: 46)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(height: 60)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1836,7 +2057,7 @@ struct ContentView: View {
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
-                    .background(Circle().fill(Color(red: 0.0, green: 0.25, blue: 0.35)))
+                    .background(Circle().fill(Color(red: 0.93, green: 0.35, blue: 0.35)))
             }
             .disabled(wearablesManager.isBusy || wearablesManager.hasActiveStreamSession)
         case .streaming:
@@ -1901,8 +2122,10 @@ private struct DebugLogsView: View {
             Section("Debug Logs") {
                 HStack {
                     Text("Button-Like Event")
+                        .appText(.body)
                     Spacer()
                     Text(wearablesManager.buttonLikeEventDetected ? "detected" : "not detected")
+                        .appText(.body)
                         .foregroundStyle(.secondary)
                 }
 
@@ -1918,24 +2141,24 @@ private struct DebugLogsView: View {
             Section("Event List") {
                 if wearablesManager.debugEvents.isEmpty {
                     Text("No wearable events logged yet.")
+                        .appText(.body)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(wearablesManager.debugEvents) { event in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(event.name)
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
+                                    .appText(.body)
                                 if event.isManualMarker {
                                     Text("Manual Marker")
-                                        .font(.caption2)
+                                        .appText(.supporting)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(.blue.opacity(0.15))
                                         .clipShape(Capsule())
                                 } else if event.isButtonLike {
                                     Text("Button-Like")
-                                        .font(.caption2)
+                                        .appText(.supporting)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(.orange.opacity(0.2))
@@ -1943,12 +2166,12 @@ private struct DebugLogsView: View {
                                 }
                                 Spacer()
                                 Text(event.timestamp.formatted(date: .omitted, time: .standard))
-                                    .font(.caption)
+                                    .appText(.supporting)
                                     .foregroundStyle(.secondary)
                             }
                             if !event.metadata.isEmpty {
                                 Text(formatDebugMetadata(event.metadata))
-                                    .font(.caption)
+                                    .appText(.supporting)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -1987,6 +2210,7 @@ private struct LivePreviewView: View {
                     "No Live Preview Yet",
                     systemImage: "video.slash",
                     description: Text("Start streaming to load live frames.")
+                        .appText(.body)
                 )
             }
         }
