@@ -147,12 +147,12 @@ struct ContentView: View {
 
         var body: some View {
             ZStack(alignment: .trailing) {
-                HStack(spacing: 0) {
+                HStack(spacing: 12) {
                     Spacer()
                     actionButton(
                         title: "Edit",
                         systemImage: "pencil",
-                        color: .blue,
+                        color: Color(red: 0.0, green: 0.25, blue: 0.35),
                         action: {
                             settledOffset = 0
                             activeEventID = nil
@@ -162,7 +162,7 @@ struct ContentView: View {
                     actionButton(
                         title: "Delete",
                         systemImage: "trash",
-                        color: .red,
+                        color: Color(red: 0.93, green: 0.35, blue: 0.35),
                         action: {
                             settledOffset = 0
                             activeEventID = nil
@@ -170,6 +170,7 @@ struct ContentView: View {
                         }
                     )
                 }
+                .padding(.trailing, 12)
                 .opacity(isActionAreaVisible ? 1 : 0)
                 .allowsHitTesting(isActionAreaVisible)
 
@@ -270,16 +271,15 @@ struct ContentView: View {
                     Image(systemName: systemImage)
                         .font(.system(size: 16, weight: .semibold))
                     Text(title)
-                        .appText(.bodyEmphasis)
+                        .appText(.supporting)
                 }
                 .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: 60, height: 60)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .frame(width: actionWidth / 2)
-            .frame(maxHeight: .infinity)
             .background(color)
+            .clipShape(Circle())
         }
     }
 
