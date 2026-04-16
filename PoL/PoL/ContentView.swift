@@ -99,7 +99,6 @@ struct ContentView: View {
     private struct ActivityTimelineSwipeRow<Content: View>: View {
         let eventID: UUID
         @Binding var activeEventID: UUID?
-        let onEdit: () -> Void
         let onDelete: () -> Void
         let roundsTopCorners: Bool
         let roundsBottomCorners: Bool
@@ -108,14 +107,13 @@ struct ContentView: View {
         @State private var settledOffset: CGFloat = 0
         @State private var liveDragOffset: CGFloat?
         @State private var dragStartOffset: CGFloat?
-        private let actionWidth: CGFloat = 152
+        private let actionWidth: CGFloat = 84
         private let swipeActivationDistance: CGFloat = 24
-        private let snapOpenThreshold: CGFloat = 76
+        private let snapOpenThreshold: CGFloat = 42
 
         init(
             eventID: UUID,
             activeEventID: Binding<UUID?>,
-            onEdit: @escaping () -> Void,
             onDelete: @escaping () -> Void,
             roundsTopCorners: Bool = false,
             roundsBottomCorners: Bool = false,
@@ -123,7 +121,6 @@ struct ContentView: View {
         ) {
             self.eventID = eventID
             self._activeEventID = activeEventID
-            self.onEdit = onEdit
             self.onDelete = onDelete
             self.roundsTopCorners = roundsTopCorners
             self.roundsBottomCorners = roundsBottomCorners
@@ -147,18 +144,8 @@ struct ContentView: View {
 
         var body: some View {
             ZStack(alignment: .trailing) {
-                HStack(spacing: 12) {
+                HStack {
                     Spacer()
-                    actionButton(
-                        title: "Edit",
-                        systemImage: "pencil",
-                        color: Color(red: 0.0, green: 0.25, blue: 0.35),
-                        action: {
-                            settledOffset = 0
-                            activeEventID = nil
-                            onEdit()
-                        }
-                    )
                     actionButton(
                         title: "Delete",
                         systemImage: "trash",
@@ -1331,9 +1318,6 @@ struct ContentView: View {
                             ActivityTimelineSwipeRow(
                                 eventID: event.id,
                                 activeEventID: $activeTimelineSwipeEventID,
-                                onEdit: {
-                                    eventPendingEdit = event
-                                },
                                 onDelete: {
                                     eventPendingDelete = event
                                 },
@@ -1365,6 +1349,8 @@ struct ContentView: View {
 
     @ViewBuilder
     private func activityTimelineCard(for event: ActivityEventRecord) -> some View {
+        let accentColor = activityCardAccentColor(for: event)
+
         VStack(alignment: .leading, spacing: 10) {
             Text(event.timestamp.formatted(date: .omitted, time: .shortened))
                 .appText(.supporting)
@@ -1374,13 +1360,18 @@ struct ContentView: View {
 
             HStack(spacing: 0) {
                 Rectangle()
-                    .fill(activityCardAccentColor(for: event))
+                    .fill(accentColor)
                     .frame(width: 2, height: 20)
 
                 HStack(alignment: .center, spacing: 12) {
-                    Text(activityCardTitle(for: event))
-                        .appText(.bodyEmphasis)
-                        .foregroundStyle(activityCardAccentColor(for: event))
+                    Button {
+                        presentActivityEditor(for: event)
+                    } label: {
+                        Text(activityCardTitle(for: event))
+                            .appText(.bodyEmphasis)
+                            .foregroundStyle(accentColor)
+                    }
+                    .buttonStyle(.plain)
 
                     Spacer(minLength: 0)
 
@@ -1389,7 +1380,7 @@ struct ContentView: View {
                         Button(action: valueAction) {
                             Text(activityCardVariableText(for: event, mode: editorMode))
                                 .appText(.bodyEmphasis)
-                                .foregroundStyle(activityCardAccentColor(for: event))
+                                .foregroundStyle(accentColor)
                                 .multilineTextAlignment(.trailing)
                         }
                         .buttonStyle(.plain)
@@ -1550,6 +1541,11 @@ struct ContentView: View {
     private func presentTimeEditor(for event: ActivityEventRecord) {
         timeDraft = event.timestamp
         eventPendingValueEdit = ActivityValueEditor(event: event, mode: .time)
+    }
+
+    private func presentActivityEditor(for event: ActivityEventRecord) {
+        activeTimelineSwipeEventID = nil
+        eventPendingEdit = event
     }
 
     private func applyValueEdit(_ editor: ActivityValueEditor) {
