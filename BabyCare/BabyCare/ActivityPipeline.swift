@@ -5,15 +5,18 @@ final class ActivityPipeline {
     private let inferenceClient: InferenceClient
     private let store: ActivityStore
     private let maxInferenceAttempts: Int
+    private let requestGate: InferenceRequestGate
 
     init(
         inferenceClient: InferenceClient,
         store: ActivityStore,
-        maxInferenceAttempts: Int = 3
+        maxInferenceAttempts: Int = 2,
+        requestGate: InferenceRequestGate = InferenceRequestGate()
     ) {
         self.inferenceClient = inferenceClient
         self.store = store
         self.maxInferenceAttempts = max(1, maxInferenceAttempts)
+        self.requestGate = requestGate
     }
 
     func processPhotoCapture(photoData: Data, capturedAt: Date) async throws -> InferenceResult {
@@ -59,6 +62,19 @@ final class ActivityPipeline {
     }
 
     private func inferWithRetry(from capture: CaptureEnvelope) async throws -> InferenceResult {
+        try await requestGate.waitForTurn()
+
+        do {
+            let inference = try await performInferenceWithRetry(from: capture)
+            await requestGate.finish()
+            return inference
+        } catch {
+            await requestGate.finish(cooldownSeconds: cooldownSeconds(after: error))
+            throw error
+        }
+    }
+
+    private func performInferenceWithRetry(from capture: CaptureEnvelope) async throws -> InferenceResult {
         var attempt = 1
         var lastError: Error?
 
@@ -67,7 +83,7 @@ final class ActivityPipeline {
                 return try await inferenceClient.infer(from: capture)
             } catch {
                 lastError = error
-                if attempt == maxInferenceAttempts {
+                if attempt == maxInferenceAttempts || !shouldRetry(error) {
                     break
                 }
 
@@ -82,5 +98,54 @@ final class ActivityPipeline {
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Inference failed after retries."]
         )
+    }
+
+    private func shouldRetry(_ error: Error) -> Bool {
+        if let geminiError = error as? GeminiInferenceError {
+            return geminiError.isRetryableHTTPError
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+    }
+
+    private func cooldownSeconds(after error: Error) -> TimeInterval? {
+        guard let geminiError = error as? GeminiInferenceError, geminiError.isRateLimitError else {
+            return nil
+        }
+        return max(geminiError.retryAfterSeconds ?? 60, 60)
+    }
+}
+
+actor InferenceRequestGate {
+    private let minSpacingSeconds: TimeInterval
+    private var isRunning: Bool = false
+    private var nextAvailableAt: Date = .distantPast
+
+    init(minSpacingSeconds: TimeInterval = 1.5) {
+        self.minSpacingSeconds = minSpacingSeconds
+    }
+
+    func waitForTurn() async throws {
+        while true {
+            let now = Date()
+            if !isRunning, now >= nextAvailableAt {
+                isRunning = true
+                return
+            }
+
+            let waitSeconds: TimeInterval
+            if isRunning {
+                waitSeconds = 0.25
+            } else {
+                waitSeconds = max(0.25, nextAvailableAt.timeIntervalSince(now))
+            }
+            try await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
+        }
+    }
+
+    func finish(cooldownSeconds: TimeInterval? = nil) {
+        isRunning = false
+        let spacing = max(minSpacingSeconds, cooldownSeconds ?? 0)
+        nextAvailableAt = Date().addingTimeInterval(spacing)
     }
 }

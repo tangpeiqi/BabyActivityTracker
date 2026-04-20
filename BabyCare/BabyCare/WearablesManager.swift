@@ -37,8 +37,12 @@ final class WearablesManager: ObservableObject {
     @Published private(set) var voiceCancelEnabled: Bool = false
     @Published private(set) var isVoiceCancelListening: Bool = false
 
+    private var deviceSession: DeviceSession?
+    private var deviceSessionStateToken: Any?
+    private var deviceSessionErrorToken: Any?
     private var streamSession: StreamSession?
     private var streamStateToken: Any?
+    private var streamErrorToken: Any?
     private var videoFrameToken: Any?
     private var photoDataToken: Any?
     private var activityPipeline: ActivityPipeline?
@@ -206,18 +210,39 @@ final class WearablesManager: ObservableObject {
             return
         }
         lastAppInitiatedSessionControlAt = Date()
-        recordDebugEvent("start_stream_requested")
+        recordDebugEvent(
+            "start_stream_requested",
+            metadata: debugContextMetadata()
+        )
         isBusy = true
         defer { isBusy = false }
 
         do {
             let status = try await Wearables.shared.checkPermissionStatus(.camera)
             cameraPermissionText = displayText(forCameraPermissionStatus: status)
+            recordDebugEvent(
+                "start_stream_permission_status",
+                metadata: debugContextMetadata(additional: [
+                    "permissionStatus": String(describing: status)
+                ])
+            )
             if !isPermissionGranted(status) {
                 let requested = try await Wearables.shared.requestPermission(.camera)
                 cameraPermissionText = displayText(forCameraPermissionStatus: requested)
+                recordDebugEvent(
+                    "start_stream_permission_requested",
+                    metadata: debugContextMetadata(additional: [
+                        "permissionStatus": String(describing: requested)
+                    ])
+                )
                 guard isPermissionGranted(requested) else {
                     lastError = "Camera permission not granted. Complete permission flow in Meta AI app and retry."
+                    recordDebugEvent(
+                        "start_stream_aborted",
+                        metadata: debugContextMetadata(additional: [
+                            "reason": "camera_permission_not_granted"
+                        ])
+                    )
                     return
                 }
             }
@@ -225,11 +250,25 @@ final class WearablesManager: ObservableObject {
             if shouldRecreateSessionForStart() {
                 await resetCurrentSessionForRestart()
             }
-            let session = try makeOrReuseSession()
+            let session = try await makeOrReuseSession()
             await session.start()
             lastError = nil
+            recordDebugEvent(
+                "start_stream_success",
+                metadata: debugContextMetadata(additional: [
+                    "deviceSessionState": deviceSession.map { String(describing: $0.state) } ?? "<none>",
+                    "streamState": String(describing: session.state)
+                ])
+            )
         } catch {
             lastError = formatError("Failed to start camera stream", error)
+            recordDebugEvent(
+                "start_stream_error",
+                metadata: debugContextMetadata(additional: [
+                    "errorType": String(describing: type(of: error)),
+                    "error": error.localizedDescription
+                ])
+            )
         }
     }
 
@@ -241,6 +280,7 @@ final class WearablesManager: ObservableObject {
 
         guard let session = streamSession else { return }
         await session.stop()
+        deviceSession?.stop()
         await clearSessionReferences()
     }
 
@@ -336,7 +376,9 @@ final class WearablesManager: ObservableObject {
                 registrationStateText = String(describing: state)
                 recordDebugEvent(
                     "registration_state",
-                    metadata: ["value": registrationStateText]
+                    metadata: debugContextMetadata(additional: [
+                        "value": registrationStateText
+                    ])
                 )
             }
         }
@@ -344,29 +386,185 @@ final class WearablesManager: ObservableObject {
         Task {
             for await devices in Wearables.shared.devicesStream() {
                 connectedDeviceCount = devices.count
+                let deviceList = devices.map(String.init(describing:)).joined(separator: ",")
                 recordDebugEvent(
                     "devices_changed",
-                    metadata: ["count": "\(connectedDeviceCount)"]
+                    metadata: debugContextMetadata(additional: [
+                        "count": "\(connectedDeviceCount)",
+                        "devices": deviceList.isEmpty ? "<none>" : deviceList
+                    ])
                 )
             }
         }
     }
 
-    private func makeOrReuseSession() throws -> StreamSession {
+    private func makeOrReuseSession() async throws -> StreamSession {
         if let existing = streamSession {
             return existing
         }
 
-        let selector = AutoDeviceSelector(wearables: Wearables.shared)
+        let currentDeviceSession: DeviceSession
+        if let existing = self.deviceSession {
+            recordDebugEvent(
+                "device_session_reused",
+                metadata: debugContextMetadata(additional: [
+                    "deviceSessionState": String(describing: existing.state),
+                    "deviceId": String(describing: existing.deviceId)
+                ])
+            )
+            currentDeviceSession = existing
+        } else {
+            let selector: any DeviceSelector
+            if let preferredDeviceId = preferredDeviceIdentifier() {
+                selector = SpecificDeviceSelector(device: preferredDeviceId)
+                recordDebugEvent(
+                    "device_session_selector",
+                    metadata: debugContextMetadata(additional: [
+                        "selector": "specific",
+                        "deviceId": preferredDeviceId
+                    ].merging(deviceMetadata(for: preferredDeviceId), uniquingKeysWith: { _, new in new }))
+                )
+            } else {
+                selector = AutoDeviceSelector(wearables: Wearables.shared)
+                recordDebugEvent(
+                    "device_session_selector",
+                    metadata: debugContextMetadata(additional: [
+                        "selector": "auto"
+                    ])
+                )
+            }
+            do {
+                let created = try Wearables.shared.createSession(deviceSelector: selector)
+                bindDeviceSessionCallbacks(created)
+                self.deviceSession = created
+                recordDebugEvent(
+                    "device_session_created",
+                    metadata: debugContextMetadata(additional: [
+                        "deviceSessionState": String(describing: created.state),
+                        "deviceId": String(describing: created.deviceId)
+                    ])
+                )
+                currentDeviceSession = created
+            } catch let error {
+                let preferredMetadata = preferredDeviceIdentifier().map(deviceMetadata(for:)) ?? [:]
+                if case .noEligibleDevice = error {
+                    lastError = """
+                    Failed to create device session: no eligible device. For a local Debug build, enable Developer Mode in Meta AI and use MetaAppID 0. Also confirm the glasses are connected and compatible.
+                    """
+                }
+                recordDebugEvent(
+                    "device_session_create_error",
+                    metadata: debugContextMetadata(additional: [
+                        "errorType": String(describing: type(of: error)),
+                        "error": error.localizedDescription
+                    ].merging(preferredMetadata, uniquingKeysWith: { _, new in new }))
+                )
+                throw error
+            }
+        }
+
         let config = StreamSessionConfig(
             videoCodec: .raw,
             resolution: .low,
             frameRate: 24
         )
-        let session = StreamSession(streamSessionConfig: config, deviceSelector: selector)
-        bindSessionCallbacks(session)
-        streamSession = session
-        return session
+        do {
+            try startDeviceSessionIfNeeded()
+            try await waitForDeviceSessionToStart(currentDeviceSession)
+            guard let session = try currentDeviceSession.addStream(config: config) else {
+                recordDebugEvent(
+                    "stream_session_create_nil",
+                    metadata: debugContextMetadata(additional: [
+                        "deviceSessionState": String(describing: currentDeviceSession.state),
+                        "deviceId": String(describing: currentDeviceSession.deviceId)
+                    ])
+                )
+                throw NSError(
+                    domain: "WearablesManager",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to create camera stream session."]
+                )
+            }
+            bindSessionCallbacks(session)
+            streamSession = session
+            recordDebugEvent(
+                "stream_session_created",
+                metadata: debugContextMetadata(additional: [
+                    "deviceSessionState": String(describing: currentDeviceSession.state),
+                    "deviceId": String(describing: currentDeviceSession.deviceId),
+                    "streamState": String(describing: session.state),
+                    "videoCodec": String(describing: config.videoCodec),
+                    "resolution": String(describing: config.resolution),
+                    "frameRate": "\(config.frameRate)"
+                ])
+            )
+            return session
+        } catch {
+            recordDebugEvent(
+                "stream_session_create_error",
+                metadata: debugContextMetadata(additional: [
+                    "deviceSessionState": String(describing: currentDeviceSession.state),
+                    "deviceId": String(describing: currentDeviceSession.deviceId),
+                    "errorType": String(describing: type(of: error)),
+                    "error": error.localizedDescription
+                ])
+            )
+            throw error
+        }
+    }
+
+    private func waitForDeviceSessionToStart(
+        _ session: DeviceSession,
+        timeout: TimeInterval = 6
+    ) async throws {
+        let startedAt = Date()
+
+        while Date().timeIntervalSince(startedAt) < timeout {
+            switch session.state {
+            case .started:
+                recordDebugEvent(
+                    "device_session_ready",
+                    metadata: debugContextMetadata(additional: [
+                        "deviceId": String(describing: session.deviceId),
+                        "deviceSessionState": String(describing: session.state),
+                        "waitedSeconds": String(format: "%.1f", Date().timeIntervalSince(startedAt))
+                    ])
+                )
+                return
+            case .stopped, .idle:
+                let error = NSError(
+                    domain: "WearablesManager",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Device session stopped before it was ready for streaming."]
+                )
+                recordDebugEvent(
+                    "device_session_ready_error",
+                    metadata: debugContextMetadata(additional: [
+                        "deviceId": String(describing: session.deviceId),
+                        "deviceSessionState": String(describing: session.state),
+                        "error": error.localizedDescription
+                    ])
+                )
+                throw error
+            case .starting, .paused, .stopping:
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+
+        let error = NSError(
+            domain: "WearablesManager",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for device session to start."]
+        )
+        recordDebugEvent(
+            "device_session_ready_timeout",
+            metadata: debugContextMetadata(additional: [
+                "deviceId": String(describing: session.deviceId),
+                "deviceSessionState": String(describing: session.state),
+                "timeoutSeconds": String(format: "%.1f", timeout)
+            ])
+        )
+        throw error
     }
 
     private func shouldRecreateSessionForStart() -> Bool {
@@ -376,8 +574,10 @@ final class WearablesManager: ObservableObject {
     }
 
     private func resetCurrentSessionForRestart() async {
-        guard let session = streamSession else { return }
-        await session.stop()
+        if let session = streamSession {
+            await session.stop()
+        }
+        deviceSession?.stop()
         await clearSessionReferences()
         recordDebugEvent("stream_session_recreated")
     }
@@ -390,14 +590,70 @@ final class WearablesManager: ObservableObject {
         activeSegmentStartedAt = nil
         audioRecorder.discardActiveSegment()
         await segmentRecorder.discardActiveSegment()
+        deviceSession = nil
+        deviceSessionStateToken = nil
+        deviceSessionErrorToken = nil
         streamSession = nil
         streamStateToken = nil
+        streamErrorToken = nil
         videoFrameToken = nil
         photoDataToken = nil
         previousStreamStateNormalized = nil
         isStreaming = false
         streamStateText = "stopped"
         stopVoiceCancelListening()
+    }
+
+    private func bindDeviceSessionCallbacks(_ session: DeviceSession) {
+        deviceSessionStateToken = session.statePublisher.listen { [weak self] state in
+            guard let self else { return }
+            Task { @MainActor in
+                self.recordDebugEvent(
+                    "device_session_state",
+                    metadata: ["value": String(describing: state)]
+                )
+            }
+        }
+
+        deviceSessionErrorToken = session.errorPublisher.listen { [weak self] error in
+            guard let self else { return }
+            Task { @MainActor in
+                self.lastError = "Device session error: \(error.localizedDescription)"
+                self.recordDebugEvent(
+                    "device_session_error",
+                    metadata: self.debugContextMetadata(additional: [
+                        "deviceId": String(describing: session.deviceId),
+                        "deviceSessionState": String(describing: session.state),
+                        "errorType": String(describing: error),
+                        "error": error.localizedDescription
+                    ])
+                )
+            }
+        }
+    }
+
+    private func startDeviceSessionIfNeeded() throws {
+        guard let deviceSession else { return }
+        switch deviceSession.state {
+        case .idle, .stopped:
+            recordDebugEvent(
+                "device_session_start_requested",
+                metadata: debugContextMetadata(additional: [
+                    "deviceId": String(describing: deviceSession.deviceId),
+                    "deviceSessionState": String(describing: deviceSession.state)
+                ])
+            )
+            try deviceSession.start()
+        case .starting, .started, .paused, .stopping:
+            recordDebugEvent(
+                "device_session_start_skipped",
+                metadata: debugContextMetadata(additional: [
+                    "deviceId": String(describing: deviceSession.deviceId),
+                    "deviceSessionState": String(describing: deviceSession.state)
+                ])
+            )
+            break
+        }
     }
 
     private func bindSessionCallbacks(_ session: StreamSession) {
@@ -420,6 +676,20 @@ final class WearablesManager: ObservableObject {
                 )
                 self.handleSegmentTransition(from: previous, to: normalized)
                 self.reevaluateVoiceCancelListening()
+            }
+        }
+
+        streamErrorToken = session.errorPublisher.listen { [weak self] error in
+            guard let self else { return }
+            Task { @MainActor in
+                self.lastError = "Stream session error: \(error.localizedDescription)"
+                self.recordDebugEvent(
+                    "stream_error",
+                    metadata: self.debugContextMetadata(additional: [
+                        "errorType": String(describing: error),
+                        "error": error.localizedDescription
+                    ])
+                )
             }
         }
 
@@ -790,6 +1060,41 @@ final class WearablesManager: ObservableObject {
     private func formatError(_ prefix: String, _ error: Error) -> String {
         let nsError = error as NSError
         return "\(prefix): \(error.localizedDescription) [\(nsError.domain):\(nsError.code)]"
+    }
+
+    private func debugContextMetadata(additional: [String: String] = [:]) -> [String: String] {
+        var metadata: [String: String] = [
+            "registrationState": registrationStateText,
+            "cameraPermissionText": cameraPermissionText,
+            "connectedDeviceCount": "\(connectedDeviceCount)",
+            "deviceSessionExists": deviceSession == nil ? "false" : "true",
+            "streamSessionExists": streamSession == nil ? "false" : "true",
+            "streamStateText": streamStateText,
+            "configSummary": configSummary
+        ]
+        for (key, value) in additional {
+            metadata[key] = value
+        }
+        return metadata
+    }
+
+    private func preferredDeviceIdentifier() -> DeviceIdentifier? {
+        Wearables.shared.devices.first
+    }
+
+    private func deviceMetadata(for deviceId: DeviceIdentifier) -> [String: String] {
+        guard let device = Wearables.shared.deviceForIdentifier(deviceId) else {
+            return ["deviceLookup": "missing"]
+        }
+
+        return [
+            "deviceLookup": "found",
+            "deviceId": deviceId,
+            "deviceName": device.nameOrId(),
+            "deviceType": device.deviceType().rawValue,
+            "deviceLinkState": String(describing: device.linkState),
+            "deviceCompatibility": String(describing: device.compatibility())
+        ]
     }
 
     private func announceActivityLogged(inference: InferenceResult) {

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 enum GeminiInferenceError: LocalizedError {
     case unsupportedCaptureType(CaptureType)
@@ -6,7 +7,7 @@ enum GeminiInferenceError: LocalizedError {
     case noModelResponse
     case invalidModelJSON
     case invalidRequestURL
-    case httpError(statusCode: Int, body: String)
+    case httpError(statusCode: Int, body: String, retryAfterSeconds: TimeInterval?)
 
     var errorDescription: String? {
         switch self {
@@ -20,9 +21,25 @@ enum GeminiInferenceError: LocalizedError {
             return "Gemini returned malformed JSON output."
         case .invalidRequestURL:
             return "Failed to build Gemini request URL."
-        case .httpError(let statusCode, let body):
-            return "Gemini request failed with HTTP \(statusCode): \(body)"
+        case .httpError(let statusCode, let body, let retryAfterSeconds):
+            let retryHint = retryAfterSeconds.map { " Retry after \(Int($0.rounded())) seconds." } ?? ""
+            return "Gemini request failed with HTTP \(statusCode): \(body)\(retryHint)"
         }
+    }
+
+    var isRateLimitError: Bool {
+        guard case .httpError(let statusCode, _, _) = self else { return false }
+        return statusCode == 429
+    }
+
+    var retryAfterSeconds: TimeInterval? {
+        guard case .httpError(_, _, let retryAfterSeconds) = self else { return nil }
+        return retryAfterSeconds
+    }
+
+    var isRetryableHTTPError: Bool {
+        guard case .httpError(let statusCode, _, _) = self else { return false }
+        return (500..<600).contains(statusCode)
     }
 }
 
@@ -32,19 +49,22 @@ struct GeminiClientConfiguration: Sendable {
     let apiBaseURL: String
     let maxFramesPerSegment: Int
     let maxInlineBytesPerPart: Int
+    let maxImagePixelDimension: Double
 
     init(
         apiKey: String,
         model: String = "gemini-2.0-flash",
         apiBaseURL: String = "https://generativelanguage.googleapis.com/v1beta",
         maxFramesPerSegment: Int = 8,
-        maxInlineBytesPerPart: Int = 1_500_000
+        maxInlineBytesPerPart: Int = 1_500_000,
+        maxImagePixelDimension: Double = 768
     ) {
         self.apiKey = apiKey
         self.model = model
         self.apiBaseURL = apiBaseURL
         self.maxFramesPerSegment = maxFramesPerSegment
         self.maxInlineBytesPerPart = maxInlineBytesPerPart
+        self.maxImagePixelDimension = maxImagePixelDimension
     }
 }
 
@@ -111,7 +131,7 @@ final class GeminiInferenceClient: InferenceClient {
         switch capture.captureType {
         case .photo:
             let photoData = try Data(contentsOf: capture.localMediaURL)
-            parts.append(.inlineData(mimeType: "image/jpeg", data: photoData))
+            parts.append(.inlineData(mimeType: "image/jpeg", data: preparedImageData(photoData)))
         case .shortVideo:
             parts.append(contentsOf: try buildSegmentParts(manifestURL: capture.localMediaURL))
         case .audioSnippet:
@@ -142,9 +162,7 @@ final class GeminiInferenceClient: InferenceClient {
         let sampledFrames = sampleEvenly(frameURLs, maxCount: configuration.maxFramesPerSegment)
         for frameURL in sampledFrames {
             let frameData = try Data(contentsOf: frameURL)
-            if frameData.count <= configuration.maxInlineBytesPerPart {
-                parts.append(.inlineData(mimeType: "image/jpeg", data: frameData))
-            }
+            parts.append(.inlineData(mimeType: "image/jpeg", data: preparedImageData(frameData)))
         }
 
         if manifest.audio.included,
@@ -223,7 +241,9 @@ final class GeminiInferenceClient: InferenceClient {
             ],
             generationConfig: .init(
                 responseMimeType: "application/json",
-                responseSchema: .activityClassifierSchema
+                responseSchema: .activityClassifierSchema,
+                temperature: 0,
+                maxOutputTokens: 256
             )
         )
 
@@ -240,7 +260,8 @@ final class GeminiInferenceClient: InferenceClient {
             let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
             throw GeminiInferenceError.httpError(
                 statusCode: http.statusCode,
-                body: String(body.prefix(500))
+                body: String(body.prefix(500)),
+                retryAfterSeconds: retryAfterSeconds(from: http)
             )
         }
 
@@ -274,6 +295,67 @@ final class GeminiInferenceClient: InferenceClient {
         }
         return trimmed
     }
+
+    private func preparedImageData(_ data: Data) -> Data {
+        guard data.count > configuration.maxInlineBytesPerPart || exceedsImageDimensionLimit(data),
+              let image = UIImage(data: data)
+        else {
+            return data
+        }
+
+        let resized = resizedImageIfNeeded(image)
+        for quality in [0.65, 0.5, 0.35] {
+            if let jpegData = resized.jpegData(compressionQuality: quality),
+               jpegData.count <= configuration.maxInlineBytesPerPart {
+                return jpegData
+            }
+        }
+
+        return resized.jpegData(compressionQuality: 0.35) ?? data
+    }
+
+    private func exceedsImageDimensionLimit(_ data: Data) -> Bool {
+        guard let image = UIImage(data: data) else { return false }
+        let maxDimension = max(image.size.width, image.size.height) * image.scale
+        return Double(maxDimension) > configuration.maxImagePixelDimension
+    }
+
+    private func resizedImageIfNeeded(_ image: UIImage) -> UIImage {
+        let maxDimension = CGFloat(configuration.maxImagePixelDimension)
+        let pixelWidth = image.size.width * image.scale
+        let pixelHeight = image.size.height * image.scale
+        let longestSide = max(pixelWidth, pixelHeight)
+        guard longestSide > maxDimension else { return image }
+
+        let scale = maxDimension / longestSide
+        let targetSize = CGSize(
+            width: max(1, floor(pixelWidth * scale)),
+            height: max(1, floor(pixelHeight * scale))
+        )
+
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+    }
+
+    private func retryAfterSeconds(from response: HTTPURLResponse) -> TimeInterval? {
+        guard let value = response.value(forHTTPHeaderField: "Retry-After") else {
+            return nil
+        }
+        if let seconds = TimeInterval(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return max(0, seconds)
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        guard let date = formatter.date(from: value) else {
+            return nil
+        }
+        return max(0, date.timeIntervalSinceNow)
+    }
 }
 
 private struct GeminiSegmentManifest: Decodable {
@@ -299,6 +381,8 @@ private struct GeminiGenerateContentRequest: Encodable {
     struct GenerationConfig: Encodable {
         let responseMimeType: String
         let responseSchema: GeminiResponseSchema
+        let temperature: Double
+        let maxOutputTokens: Int
     }
 
     let contents: [Content]

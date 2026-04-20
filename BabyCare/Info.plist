@@ -44,9 +44,9 @@
 		<key>AppLinkURLScheme</key>
 		<string>babycaremeta://</string>
 		<key>ClientToken</key>
-		<string>AR|931350532905258|d10c340806543043f08c31fddd95bfea</string>
+		<string>$(CLIENT_TOKEN)</string>
 		<key>MetaAppID</key>
-		<string>931350532905258</string>
+		<string>$(META_APP_ID)</string>
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>

@@ -359,6 +359,8 @@ struct ContentView: View {
                                                     Text(settingsCardError)
                                                         .foregroundStyle(.red)
                                                         .appText(.body)
+                                                        .lineLimit(nil)
+                                                        .fixedSize(horizontal: false, vertical: true)
                                                         .frame(maxWidth: .infinity, alignment: .leading)
                                                         .padding(.vertical, 12)
                                                 }
@@ -372,15 +374,15 @@ struct ContentView: View {
                                                 diagnosticNavigationRow("Debug Logs") {
                                                     settingsDestination = .debugLogs
                                                 }
-                                                .padding(.vertical, 12)
+                                                .padding(.vertical, 16)
                                                 Divider()
                                                 diagnosticNavigationRow("Live Preview") {
                                                     settingsDestination = .livePreview
                                                 }
-                                                .padding(.vertical, 12)
+                                                .padding(.vertical, 16)
                                             }
                                             .padding(.horizontal, 16)
-                                            .padding(.vertical, 8)
+                                            .padding(.vertical, 4)
                                         }
                                     }
                                 }
@@ -642,14 +644,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private func statusRow(_ label: String, _ value: String) -> some View {
-        HStack {
+        HStack(alignment: .top, spacing: 12) {
             Text(label)
                 .appText(.body)
-            Spacer()
+            Spacer(minLength: 0)
             Text(value)
                 .appText(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 240, alignment: .trailing)
         }
     }
 
@@ -1780,16 +1785,15 @@ struct ContentView: View {
 
     @ViewBuilder
     private func widgetCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 24)
-                .fill(.white)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24)
-                        .strokeBorder(Color(red: 0.945, green: 0.945, blue: 0.945), lineWidth: 1)
-                )
-
-            content()
-        }
+        content()
+            .background {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24)
+                            .strokeBorder(Color(red: 0.945, green: 0.945, blue: 0.945), lineWidth: 1)
+                    )
+            }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
